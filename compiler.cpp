@@ -356,4 +356,83 @@ bool starts(const string &t) const
         }
         return v;
     }
+
+
+
+    void stringLiteral(vector<Token> &out)
+    {
+        out.push_back(make("T_QUOTES")); 
+        adv();                           
+        int sl = line, sc = col;
+        string buf;
+        while (true)
+        {
+            char c = peek();
+            if (c == '\0')
+                err("Unterminated string literal");
+            if (c == '"')
+            { 
+                out.push_back(Token{"T_STRINGLIT", buf, sl, sc});
+                out.push_back(make("T_QUOTES")); 
+                adv();
+                break;
+            }
+            if (c == '\\')
+            { 
+                adv();
+                char e = peek();
+                if (e == '\0')
+                    err("Unterminated escape in string");
+                switch (e)
+                {
+                case '"':
+                    buf.push_back('"');
+                    adv();
+                    break;
+                case '\\':
+                    buf.push_back('\\');
+                    adv();
+                    break;
+                case 'n':
+                    buf.push_back('\n');
+                    adv();
+                    break;
+                case 't':
+                    buf.push_back('\t');
+                    adv();
+                    break;
+                case 'r':
+                    buf.push_back('\r');
+                    adv();
+                    break;
+                case 'u':
+                {
+                    adv();
+                    uint32_t cp = readHexDigits(4);
+                    appendUTF8(cp, buf);
+                    break;
+                }
+                case 'U':
+                { 
+                    adv();
+                    uint32_t cp = readHexDigits(8);
+                    appendUTF8(cp, buf);
+                    break;
+                }
+                default:
+                    buf.push_back(e);
+                    adv();
+                    break; 
+                }
+            }
+            else
+            {
+                buf.push_back(c);
+                adv();
+            }
+        }
+    }
+
+   
 };
+
