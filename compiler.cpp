@@ -178,4 +178,182 @@ struct Lexer
         while (n--)
             adv();
     }
+bool starts(const string &t) const
+    {
+        if (i + t.size() > s.size())
+            return false;
+        size_t k = 0;
+        while (k < t.size()) 
+        {
+            if (s[i + k] != t[k])
+            {
+                return false;
+            }
+            ++k;
+        }
+        return true;
+    }
+    [[noreturn]] void err(const string &msg) const
+    {
+        ostringstream os;
+        os << "Line " << line << ", Col " << col << ": " << msg;
+        throw LexError(os.str());
+    }
+
+    Token make(const string &t) { return Token{t, "", line, col}; }
+
+    void skipWS(vector<Token> &out)
+    {
+        while (true)
+        {
+            char c = peek();
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f')
+            {
+                adv();
+                continue;
+            }
+            if (c == '/' && peek(1) == '/')
+            {
+                int sl = line, sc = col;
+                string buf;
+                while (peek() != '\n' && peek() != '\0')
+                {
+                    buf.push_back(peek());
+                    adv();
+                }
+                out.push_back(Token{"T_COMMENT", buf, sl, sc});
+                continue;
+            }
+            if (c == '/' && peek(1) == '*')
+            {
+                int sl = line, sc = col;
+                adv();
+                adv();
+                string buf = "/*";
+                while (true)
+                {
+                    if (peek() == '\0')
+                        err("Unterminated block comment");
+                    buf.push_back(peek());
+                    if (peek() == '*' && peek(1) == '/')
+                    {
+                        buf.push_back('/');
+                        adv();
+                        adv();
+                        break;
+                    }
+                    adv();
+                }
+                out.push_back(Token{"T_COMMENT", buf, sl, sc});
+                continue;
+            }
+            break;
+        }
+    }
+
+
+    Token number()
+    {
+        int sl = line, sc = col;
+        size_t start = i;
+        if (peek() == '0' && (peek(1) == 'x' || peek(1) == 'X'))
+        {
+            adv();
+            adv();
+            if (!isxdigit((unsigned char)peek()))
+                err("Invalid hex literal");
+            while (isxdigit((unsigned char)peek()))
+                adv();
+            string lex = s.substr(start, i - start);
+            // reject 0xFF变量 style
+            uint32_t cp;
+            size_t len;
+            if (decodeUTF8(s, i, cp, len) && isIdentContinue(cp))
+                err("Invalid identifier starting with a number");
+            return Token{"T_INTLIT", lex, sl, sc};
+        }
+        bool sawDot = false, sawExp = false;
+        while (isdigit((unsigned char)peek()))
+            adv();
+        if (peek() == '.' && isdigit((unsigned char)peek(1)))
+        {
+            sawDot = true;
+            adv();
+            while (isdigit((unsigned char)peek()))
+                adv();
+        }
+        if (peek() == 'e' || peek() == 'E')
+        {
+            if (isdigit((unsigned char)peek(1)) || ((peek(1) == '+' || peek(1) == '-') && isdigit((unsigned char)peek(2))))
+            {
+                sawExp = true;
+                adv();
+                if (peek() == '+' || peek() == '-')
+                    adv();
+                if (!isdigit((unsigned char)peek()))
+                    err("Malformed exponent");
+                while (isdigit((unsigned char)peek()))
+                    adv();
+            }
+        }
+        string lex = s.substr(start, i - start);
+        // reject 123变量 style
+        uint32_t cp;
+        size_t len;
+        if (decodeUTF8(s, i, cp, len) && isIdentContinue(cp))
+            err("Invalid identifier starting with a number");
+        return Token{(sawDot || sawExp) ? "T_FLOATLIT" : "T_INTLIT", lex, sl, sc};
+    }
+
+    
+    Token identOrKeyword()
+    {
+        int sl = line, sc = col;
+        size_t start = i;
+
+        uint32_t cp;
+        size_t len;
+        if (!decodeUTF8(s, i, cp, len) || !isIdentStart(cp))
+            err("Identifier expected");
+        advN(len); 
+
+        while (true)
+        {
+            size_t pos = i;
+            if (!decodeUTF8(s, pos, cp, len))
+                break;
+            if (!isIdentContinue(cp))
+                break;
+            advN(len);
+        }
+
+        string lex = s.substr(start, i - start);
+        auto it = kw.find(lex);
+        if (it != kw.end())
+        {
+            if (it->second == "T_BOOLLIT")
+                return Token{it->second, lex, sl, sc};
+            return Token{it->second, "", sl, sc};
+        }
+        return Token{"T_IDENTIFIER", lex, sl, sc};
+    }
+
+    uint32_t readHexDigits(int n)
+    {
+        uint32_t v = 0;
+        int k = 0;
+        while (k < n)
+        {
+            char c = peek();
+            int hv = hexVal(c);
+            if (hv < 0)
+            {
+                err("Invalid hex escape");
+            }
+            v = (v << 4) | (uint32_t)hv;
+            adv();
+            k++;
+        }
+        return v;
+    }
 };
