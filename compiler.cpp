@@ -433,6 +433,113 @@ bool starts(const string &t) const
         }
     }
 
+    vector<Token> tokenize()
+    {
+        vector<Token> out;
+        while (true)
+        {
+            skipWS(out);
+            char c = peek();
+            if (c == '\0')
+                break;
+
+            if (c == '"')
+            {
+                stringLiteral(out);
+                continue;
+            }
+
+            
+            if (isdigit((unsigned char)c))
+            {
+                out.push_back(number());
+                continue;
+            }
+
+            
+            {
+                uint32_t cp;
+                size_t len;
+                if (decodeUTF8(s, i, cp, len) && isIdentStart(cp))
+                {
+                    out.push_back(identOrKeyword());
+                    continue;
+                }
+            }
+
+           
+            bool matched = false;
+            for (auto &p : multi)
+            {
+                if (starts(p.first))
+                {
+                    out.push_back(Token{p.second, "", line, col});
+                    for (size_t k = 0; k < p.first.size(); ++k)
+                        adv();
+                    matched = true;
+                    break;
+                }
+            }
+            if (matched)
+                continue;
+
+           
+            auto it = single.find(c);
+            if (it != single.end())
+            {
+                out.push_back(Token{it->second, "", line, col});
+                adv();
+                continue;
+            }
+
+            err(string("unexpected character '") + c + "'");
+        }
+        return out;
+    }
    
 };
+
+
+
+
+int main()
+{
+    const string input = R"(void 🍕_函数(int x, float y) {
+        string title = "emoji: \u263A and quote: \"ok\"";
+        // this is a comment — Unicode ✓
+        /* блок комментария / 区块注释 */
+        bool флаг = (x == 40);
+        if (变量 != 0 && y >= 2.5) {
+            флаг = true || false;
+        }
+        let café = 42;
+        return x;
+    })";
+
+    try
+    {
+        Lexer lx{input};
+        auto toks = lx.tokenize();
+        cout << "[";
+        for (size_t k = 0; k < toks.size(); ++k)
+        {
+            if (k)
+                cout << ", ";
+            cout << show(toks[k]);
+        }
+        cout << "]\n";
+    }
+    catch (const LexError &e)
+    {
+        cout << "lexer error: " << e.what();
+        cout<<endl;
+        return 1;
+    }
+    return 0;
+}
+
+
+
+
+
 
