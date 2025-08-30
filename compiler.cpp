@@ -496,50 +496,224 @@ bool starts(const string &t) const
         }
         return out;
     }
-   
+   Token identOrKeyword()
+    {
+        int sl=line, sc=col; size_t start=i;
+        uint32_t cp; size_t len;
+        if (!decodeUTF8(s,i,cp,len) || !isIdentStart(cp)) err("Identifier expected");
+        advN(len);
+        while (true){
+            size_t pos=i; if (!decodeUTF8(s,pos,cp,len)) break; if (!isIdentContinue(cp)) break; advN(len);
+        }
+        string lex = s.substr(start, i-start);
+        auto it = kw.find(lex);
+        if (it != kw.end()){
+            if (it->second=="T_BOOLLIT") return Token{it->second, lex, sl, sc};
+            return Token{it->second, "", sl, sc};
+        }
+        return Token{"T_IDENTIFIER", lex, sl, sc};
+    }
+
+    uint32_t readHexDigits(int n)
+    {
+        uint32_t v=0;
+        int k = 0;
+        while (k < n) {
+            char c = peek();
+            int hv = hexVal(c);
+            if (hv < 0)
+                err("Invalid hex escape");
+            v = (v << 4) | (uint32_t)hv;
+            adv();
+            k++;
+        }
+
+        return v;
+    }
+
+    void stringLiteral(vector<Token> &out)
+    {
+        out.push_back(make("T_QUOTES"));
+        adv(); // consume opening "
+        int sl=line, sc=col; string buf;
+        while (true){
+            char c=peek();
+            if (c=='\0') err("Unterminated string literal");
+            if (c=='"'){ out.push_back(Token{"T_STRINGLIT", buf, sl, sc}); out.push_back(make("T_QUOTES")); adv(); break; }
+            if (c=='\\'){
+                adv(); char e=peek(); if (e=='\0') err("Unterminated escape in string");
+                switch(e){
+                    case '"': buf.push_back('"'); adv(); break;
+                    case '\\': buf.push_back('\\'); adv(); break;
+                    case 'n': buf.push_back('\n'); adv(); break;
+                    case 't': buf.push_back('\t'); adv(); break;
+                    case 'r': buf.push_back('\r'); adv(); break;
+                    case 'u': { adv(); uint32_t cp=readHexDigits(4); appendUTF8(cp, buf); break; }
+                    case 'U': { adv(); uint32_t cp=readHexDigits(8); appendUTF8(cp, buf); break; }
+                    default: buf.push_back(e); adv(); break;
+                }
+            } else { buf.push_back(c); adv(); }
+        }
+    }
+
+    vector<Token> tokenize()
+    {
+        vector<Token> out;
+        while (true){
+            skipWS(out);
+            char c=peek();
+            if (c=='\0') break;
+            if (c=='"'){ stringLiteral(out); continue; }
+            if (isdigit((unsigned char)c)){ out.push_back(number()); continue; }
+            {
+                uint32_t cp; size_t len;
+                if (decodeUTF8(s,i,cp,len) && isIdentStart(cp)){ out.push_back(identOrKeyword()); continue; }
+            }
+            bool matched=false;
+            for (auto &p: multi)
+            {
+                if (starts(p.first))
+                {
+                    out.push_back(Token{p.second,"",line,col});
+                    for (size_t k=0;k<p.first.size();++k) adv();
+                    matched=true; break;
+                }
+            }
+            if (matched) continue;
+            auto it = single.find(c);
+            if (it != single.end()){ out.push_back(Token{it->second,"",line,col}); adv(); continue; }
+            err(string("Unexpected character '")+c+"'");
+        }
+        return out;
+    }
+};
+
+// --- Lexer2: regex-based---
+static string unescapeString(const string &raw)
+{
+    string out; out.reserve(raw.size());
+    for (size_t i = 0; i < raw.size(); )
+    {
+        char c = raw[i++];
+        if (c != '\\')
+        { 
+            out.push_back(c); continue;
+        }
+        if (i >= raw.size()) throw LexError("Unterminated escape in string");
+        char e = raw[i++];
+        switch (e){
+            case '"': out.push_back('"'); break;
+            case '\\': out.push_back('\\'); break;
+            case 'n': out.push_back('\n'); break;
+            case 't': out.push_back('\t'); break;
+            case 'r': out.push_back('\r'); break;
+            case 'u': {
+                if (i + 4 > raw.size()) throw LexError("Invalid \\u escape");
+                uint32_t cp=0; for(int k=0;k<4;++k)
+                { 
+                    int hv=hexVal(raw[i++]); 
+                    if(hv<0) 
+                        throw LexError("Invalid \\u escape");
+                        cp=(cp<<4)|hv; 
+                }
+                appendUTF8(cp, out); break;
+            }
+            case 'U': {
+                if (i + 8 > raw.size()) throw LexError("Invalid \\U escape");
+                uint32_t cp=0; for(int k=0;k<8;++k)
+                { int hv=hexVal(raw[i++]); 
+                    if(hv<0) throw LexError("Invalid \\U escape"); 
+                    cp=(cp<<4)|hv; 
+                }
+                appendUTF8(cp, out); break;
+            }
+            default: out.push_back(e); break;
+        }
+    }
+    return out;
+}
+
+static void advancePos(const string &lex, int &line, int &col)
+{
+    for (char ch : lex)
+    { 
+        if (ch=='\n')
+        { 
+            ++line; col=1; 
+        } else 
+        { 
+            ++col; 
+        } 
+    }
+}
+
+struct Lexer2
+{
+    string s; size_t i = 0; int line = 1, col = 1;
+
+    unordered_map<string, string> kw = {
+        {"fn","T_FUNCTION"},{"return","T_RETURN"},{"if","T_IF"},{"else","T_ELSE"},
+        {"for","T_FOR"},{"while","T_WHILE"},{"break","T_BREAK"},{"continue","T_CONTINUE"},
+        {"int","T_INT"},{"float","T_FLOAT"},{"bool","T_BOOL"},{"string","T_STRING"},
+        {"char","T_CHAR"},{"void","T_VOID"},{"true","T_BOOLLIT"},{"false","T_BOOLLIT"},
+        {"const","T_CONST"},{"let","T_LET"},{"var","T_VAR"},{"switch","T_SWITCH"},
+        {"case","T_CASE"},{"default","T_DEFAULT"},{"do","T_DO"}
+    };
+
+    struct Rule { string name; regex re; bool skip=false; };
+    vector<Rule> rules;
+
+    unordered_map<char,string> single = {
+        {'(',"T_PARENL"},{')',"T_PARENR"},{'{',"T_BRACEL"},{'}',"T_BRACER"},
+        {'[',"T_BRACKETL"},{']',"T_BRACKETR"},{';',"T_SEMICOLON"},{',',"T_COMMA"},
+        {':',"T_COLON"},{'.',"T_DOT"},{'+',"T_PLUS"},{'-',"T_MINUS"},{'*',"T_STAR"},
+        {'/',"T_SLASH"},{'%',"T_PERCENT"},{'<',"T_LT"},{'>',"T_GT"},{'=',"T_ASSIGNOP"},
+        {'!',"T_BANG"},{'&',"T_AMP"},{'|',"T_PIPE"},{'^',"T_CARET"},{'~',"T_TILDE"},
+        {'?', "T_QUESTION"},{'"',"T_QUOTES"}
 };
 
 
 
 
-int main()
+int main1()
 {
-    const string input = R"(void 🍕_函数(int x, float y) {
-        string title = "emoji: \u263A and quote: \"ok\"";
-        // this is a comment — Unicode ✓
-        /* блок комментария / 区块注释 */
-        bool флаг = (x == 40);
-        if (变量 != 0 && y >= 2.5) {
-            флаг = true || false;
-        }
-        let café = 42;
-        return x;
-    })";
-
-    try
-    {
-        Lexer lx{input};
+    try {
+        Lexer1 lx{Sample};
         auto toks = lx.tokenize();
         cout << "[";
-        for (size_t k = 0; k < toks.size(); ++k)
+        for (size_t k = 0; k < toks.size(); ++k) 
         {
-            if (k)
-                cout << ", ";
+            if (k) cout << ", ";
             cout << show(toks[k]);
         }
         cout << "]\n";
-    }
-    catch (const LexError &e)
+    } catch (const LexError &e) 
     {
-        cout << "lexer error: " << e.what();
-        cout<<endl;
+        cout << "LexerError: " << e.what() << "\n";
         return 1;
     }
     return 0;
 }
 
-
-
+int main2()
+{
+    try {
+        Lexer2 lx{Sample};
+        auto toks = lx.tokenize();
+        cout << "[";
+        for (size_t k = 0; k < toks.size(); ++k) 
+        {
+            if (k) cout << ", ";
+            cout << show(toks[k]);
+        }
+        cout << "]\n";
+    } catch (const LexError &e) 
+    {
+        cout << "LexerError: " << e.what() << "\n";
+        return 1;
+    }
+    return 0;
+}
 
 
 
