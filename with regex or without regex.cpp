@@ -186,4 +186,5 @@ struct Lexer1
         if (decodeUTF8(s,i,cp,len) && isIdentContinue(cp)) err("Invalid identifier starting with a number");
         return Token{ (sawDot||sawExp) ? "T_FLOATLIT" : "T_INTLIT", lex, sl, sc};
     }
-}
+
+};
