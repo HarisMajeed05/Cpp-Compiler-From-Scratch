@@ -360,7 +360,154 @@ struct Lexer2
         {'/',"T_SLASH"},{'%',"T_PERCENT"},{'<',"T_LT"},{'>',"T_GT"},{'=',"T_ASSIGNOP"},
         {'!',"T_BANG"},{'&',"T_AMP"},{'|',"T_PIPE"},{'^',"T_CARET"},{'~',"T_TILDE"},
         {'?', "T_QUESTION"},{'"',"T_QUOTES"}
+    };
+
+    
+    Lexer2(const string &src) : s(src)
+    {
+        rules = {
+            {"WS",            regex(R"(^[ \t\r\n\v\f]+)") , true},
+            {"LINE_COMMENT",  regex(R"(^//([^\n]*))")},
+            {"BLOCK_COMMENT", regex(R"(^/\*[\s\S]*?\*/)")},
+            {"STRING",        regex(R"(^"(?:(?:\\["\\ntr])|(?:\\u[0-9A-Fa-f]{4})|(?:\\U[0-9A-Fa-f]{8})|(?:\\.)|[^"\\])*")")},
+            {"HEX",           regex(R"(^0[xX][0-9A-Fa-f]+(?![_$A-Za-z0-9]|[^\x00-\x7F]))")},
+            {"DEC",           regex(R"(^[0-9]+(?:\.[0-9]+)?(?:[eE][+\-]?[0-9]+)?(?![_$A-Za-z0-9]|[^\x00-\x7F]))")},
+            {"IDENT",         regex(R"(^(?:[_$A-Za-z]|[^\x00-\x7F])(?:[_$A-Za-z0-9]|[^\x00-\x7F])*)")},
+            {"OP2",           regex(R"(^(==|!=|<=|>=|&&|\|\||<<|>>|\+\+|--|->|\+=|-=|\*=|/=|%=|&=|\|=|\^=))")},
+            {"OP1",           regex(R"(^[()\{\}\[\];,:\.\+\-\*\/%<>=!&\|\^\~\?"])")}
+        };
+    }
+
+    [[noreturn]] void err(const string &msg) const { ostringstream os; os<<"Line "<<line<<", Col "<<col<<": "<<msg; throw LexError(os.str()); }
+
+    bool nextToken(vector<Token> &out)
+    {
+        if (i >= s.size())
+        {
+            return false;
+        }
+       
+        if (i + 1 < s.size() && s[i]=='/' && s[i+1]=='*')
+        {
+            auto pos = s.find("*/", i+2);
+            if (pos == string::npos) err("Unterminated block comment");
+        }
+
+        for (const auto &rule : rules)
+        {
+            match_results<string::const_iterator> m;
+            string::const_iterator first = s.begin() + static_cast<ptrdiff_t>(i);
+            string::const_iterator last  = s.end();
+
+            if (regex_search(first, last, m, rule.re, regex_constants::match_continuous))
+            {
+                string lex = m.str();
+
+                if (rule.skip) { advancePos(lex, line, col); i += lex.size(); return true; }
+
+                int tokLine=line, tokCol=col;
+
+                if (rule.name=="LINE_COMMENT"){
+                    string content = m.size()>=2 ? m[1].str() : "";
+                    out.push_back(Token{"T_COMMENT", content, tokLine, tokCol});
+                } else if (rule.name=="BLOCK_COMMENT"){
+                    out.push_back(Token{"T_COMMENT", lex, tokLine, tokCol});
+                } else if (rule.name=="STRING"){
+                    out.push_back(Token{"T_QUOTES","",tokLine,tokCol});
+                    string inside = lex.substr(1, lex.size()-2);
+                    string unesc  = unescapeString(inside);
+                    out.push_back(Token{"T_STRINGLIT", unesc, tokLine, tokCol+1});
+                    out.push_back(Token{"T_QUOTES","",tokLine,tokCol});
+                } else if (rule.name=="HEX"){
+                    out.push_back(Token{"T_INTLIT", lex, tokLine, tokCol});
+                } else if (rule.name=="DEC"){
+                    bool isFloat = (lex.find('.') != string::npos) || (lex.find('e') != string::npos) || (lex.find('E') != string::npos);
+                    out.push_back(Token{ isFloat ? "T_FLOATLIT" : "T_INTLIT", lex, tokLine, tokCol});
+                } else if (rule.name=="IDENT"){
+                    auto it = kw.find(lex);
+                    if (it != kw.end()){
+                        if (it->second=="T_BOOLLIT") out.push_back(Token{"T_BOOLLIT", lex, tokLine, tokCol});
+                        else out.push_back(Token{it->second, "", tokLine, tokCol});
+                    } else {
+                        out.push_back(Token{"T_IDENTIFIER", lex, tokLine, tokCol});
+                    }
+                } 
+                else if (rule.name=="OP2"){
+                    static const unordered_map<string,string> m2 = {
+                        {"==","T_EQUALSOP"},{"!=","T_NEQ"},{"<=","T_LTE"},{">=","T_GTE"},
+                        {"&&","T_ANDAND"},{"||","T_OROR"},{"<<","T_SHL"},{">>","T_SHR"},
+                        {"++","T_INC"},{"--","T_DEC"},{"->","T_ARROW"},
+                        {"+=","T_PLUSEQ"},{"-=","T_MINUSEQ"},{"*=","T_MULEQ"},{" /=","T_DIVEQ"},
+                        {"%=","T_MODEQ"},{"&=","T_ANDEQ"},{"|=","T_OREQ"},{"^=","T_XOREQ"}
+                    };
+                    
+                    auto key = lex; if (key == "/=") key = "/=";
+                    auto it = m2.find(key);
+                    if (it == m2.end())
+                    {
+                      
+                        static const unordered_map<string,string> m2b = {
+                            {"==","T_EQUALSOP"},{"!=","T_NEQ"},{"<=","T_LTE"},{">=","T_GTE"},
+                            {"&&","T_ANDAND"},{"||","T_OROR"},{"<<","T_SHL"},{">>","T_SHR"},
+                            {"++","T_INC"},{"--","T_DEC"},{"->","T_ARROW"},
+                            {"+=","T_PLUSEQ"},{"-=","T_MINUSEQ"},{"*=","T_MULEQ"},{"/=","T_DIVEQ"},
+                            {"%=","T_MODEQ"},{"&=","T_ANDEQ"},{"|=","T_OREQ"},{"^=","T_XOREQ"}
+                        };
+                        auto it2 = m2b.find(lex);
+                        if (it2 == m2b.end()) err(string("Unknown operator: ")+lex);
+                        out.push_back(Token{it2->second, "", tokLine, tokCol});
+                    } else 
+                    {
+                        out.push_back(Token{it->second, "", tokLine, tokCol});
+                    }
+                } else if (rule.name=="OP1")
+                {
+                    char c = lex[0];
+                    auto it = single.find(c);
+                    if (it == single.end()) err(string("Unexpected character '")+c+"'");
+                    out.push_back(Token{it->second, "", tokLine, tokCol});
+                } else 
+                {
+                    err("Unhandled rule");
+                }
+
+                advancePos(lex, line, col);
+                i += lex.size();
+                return true;
+            }
+        }
+
+        ostringstream os; os << "Unexpected character '" << s[i] << "'";
+        err(os.str());
+        return false;
+    }
+
+    vector<Token> tokenize()
+    {
+        vector<Token> out;
+        while (i < s.size())
+        {
+            if (!nextToken(out)) break;
+        }
+        return out;
+    }
 };
+
+
+
+
+static const string Sample = R"(fn void 🍕_函数(int x, float y) {
+    string title = "emoji: \u263A and quote: \"ok\"";
+    // this is a comment — Unicode ✓
+    /* блок комментария / 区块注释 */
+    bool флаг = (x == 40);
+    if (变量 != 0 && y >= 2.5) {
+        флаг = true || false;
+    }
+    let café = 42;
+    return x;
+})";
+
 
 int main1()
 {
@@ -400,4 +547,30 @@ int main2()
         return 1;
     }
     return 0;
+}
+
+
+
+// --- main ---
+int main()
+{
+    cout << "Do you want to run without regex or with regex? \nEnter 1 for (without regex) \nEnter 2 for (with regex): ";
+    int choice = 0;
+    if (!(cin >> choice))
+    {   
+        cout << "Invalid input.\n";
+        return 1; 
+    }
+    if (choice == 1) 
+    {
+        return main1();
+    }
+
+    if (choice == 2)
+    {
+        return main2();
+    }
+    cout << "Please enter 1 or 2";
+    cout<<endl;
+    return 1;
 }
