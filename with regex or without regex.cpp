@@ -186,7 +186,7 @@ struct Lexer1
         if (decodeUTF8(s,i,cp,len) && isIdentContinue(cp)) err("Invalid identifier starting with a number");
         return Token{ (sawDot||sawExp) ? "T_FLOATLIT" : "T_INTLIT", lex, sl, sc};
     }
-Token identOrKeyword()
+    Token identOrKeyword()
     {
         int sl=line, sc=col; size_t start=i;
         uint32_t cp; size_t len;
@@ -242,7 +242,11 @@ Token identOrKeyword()
                     case 'U': { adv(); uint32_t cp=readHexDigits(8); appendUTF8(cp, buf); break; }
                     default: buf.push_back(e); adv(); break;
                 }
-            } else { buf.push_back(c); adv(); }
+            } 
+            else
+            { 
+                buf.push_back(c); adv();
+            }
         }
     }
 
@@ -574,3 +578,4 @@ int main()
     cout<<endl;
     return 1;
 }
+
