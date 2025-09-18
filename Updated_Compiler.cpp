@@ -10,28 +10,29 @@
 
 using namespace std;
 
-// --- Shared struct for both versions... & helper func---
+// --- Updated Token struct with int value ---
 struct Token {
     string type;
-    string value;
+    int value;           // Changed from string to int
+    string lexeme;       // Added to store the original text
     int line, col;
 };
 
 static string show(const Token &t)
 {
-    if (t.value.empty())
+    if (t.lexeme.empty())
         return t.type;
     if (t.type == "T_IDENTIFIER" || t.type == "T_STRINGLIT" || t.type == "T_COMMENT")
     {
         string esc;
-        esc.reserve(t.value.size());
-        for (char c : t.value)
+        esc.reserve(t.lexeme.size());
+        for (char c : t.lexeme)
             esc += (c == '"') ? "\\\"" : string(1, c);
-        return t.type + "(\"" + esc + "\")";
+        return t.type + "(\"" + esc + "\", " + to_string(t.value) + ")";
     }
     if (t.type == "T_INTLIT" || t.type == "T_FLOATLIT" || t.type == "T_BOOLLIT")
-        return t.type + "(" + t.value + ")";
-    return t.type + "(" + t.value + ")";
+        return t.type + "(" + t.lexeme + ", " + to_string(t.value) + ")";
+    return t.type + "(" + t.lexeme + ", " + to_string(t.value) + ")";
 }
 
 struct LexError : runtime_error { using runtime_error::runtime_error; };
@@ -59,6 +60,7 @@ static bool decodeUTF8(const string &s, size_t pos, uint32_t &cp, size_t &len)
     }
     return false;
 }
+
 static void appendUTF8(uint32_t cp, string &out)
 {
     if (cp <= 0x7F) out.push_back((char)cp);
@@ -67,24 +69,37 @@ static void appendUTF8(uint32_t cp, string &out)
     else if (cp <= 0x10FFFF) { out.push_back((char)(0xF0 | ((cp >> 18) & 0x07))); out.push_back((char)(0x80 | ((cp >> 12) & 0x3F))); out.push_back((char)(0x80 | ((cp >> 6) & 0x3F))); out.push_back((char)(0x80 | (cp & 0x3F))); }
     else out += "\xEF\xBF\xBD";
 }
+
 static bool isIdentStart(uint32_t cp)
 {
     if (cp == '_' || cp == '$') return true;
     if (cp < 128) return std::isalpha((unsigned char)cp);
     return true; // allow any non-ASCII as start
 }
+
 static bool isIdentContinue(uint32_t cp)
 {
     if (isIdentStart(cp)) return true;
     if (cp < 128) return std::isdigit((unsigned char)cp);
     return true;
 }
+
 static int hexVal(char c)
 {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
     if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
     return -1;
+}
+
+// Hash function for string to generate int values
+static int stringHash(const string &str)
+{
+    int hash = 0;
+    for (char c : str) {
+        hash = hash * 31 + static_cast<int>(static_cast<unsigned char>(c));
+    }
+    return hash;
 }
 
 // ---Lexer1: manual (non-regex) ---
@@ -130,8 +145,15 @@ struct Lexer1
         }
         return true;
     }
-    [[noreturn]] void err(const string &msg) const { ostringstream os; os<<"Line "<<line<<", Col "<<col<<": "<<msg; throw LexError(os.str()); }
-    Token make(const string &t){ return Token{t,"",line,col}; }
+    [[noreturn]] void err(const string &msg) const { 
+        ostringstream os; 
+        os<<"Line "<<line<<", Col "<<col<<": "<<msg; 
+        throw LexError(os.str()); 
+    }
+    
+    Token make(const string &t, const string &lex = "", int val = 0){ 
+        return Token{t, val, lex, line, col}; 
+    }
 
     void skipWS(vector<Token> &out)
     {
@@ -141,7 +163,7 @@ struct Lexer1
             if (c=='/' && peek(1)=='/'){
                 int sl=line, sc=col; string buf;
                 while (peek()!='\n' && peek()!='\0'){ buf.push_back(peek()); adv(); }
-                out.push_back(Token{"T_COMMENT", buf, sl, sc});
+                out.push_back(Token{"T_COMMENT", stringHash(buf), buf, sl, sc});
                 continue;
             }
             if (c=='/' && peek(1)=='*'){
@@ -152,7 +174,7 @@ struct Lexer1
                     if (peek()=='*'&&peek(1)=='/'){ buf.push_back('/'); adv(); adv(); break; }
                     adv();
                 }
-                out.push_back(Token{"T_COMMENT", buf, sl, sc});
+                out.push_back(Token{"T_COMMENT", stringHash(buf), buf, sl, sc});
                 continue;
             }
             break;
@@ -169,23 +191,47 @@ struct Lexer1
             string lex = s.substr(start, i-start);
             uint32_t cp; size_t len;
             if (decodeUTF8(s,i,cp,len) && isIdentContinue(cp)) err("Invalid identifier starting with a number");
-            return Token{"T_INTLIT", lex, sl, sc};
+            
+            // Convert hex string to int
+            int val = 0;
+            for (size_t j = 2; j < lex.size(); ++j) {
+                val = val * 16 + hexVal(lex[j]);
+            }
+            return Token{"T_INTLIT", val, lex, sl, sc};
         }
+        
         bool sawDot=false, sawExp=false;
         while (isdigit((unsigned char)peek())) adv();
-        if (peek()=='.' && isdigit((unsigned char)peek(1))){ sawDot=true; adv(); while (isdigit((unsigned char)peek())) adv(); }
+        if (peek()=='.' && isdigit((unsigned char)peek(1))){ 
+            sawDot=true; adv(); 
+            while (isdigit((unsigned char)peek())) adv(); 
+        }
         if (peek()=='e'||peek()=='E'){
             if (isdigit((unsigned char)peek(1)) || ((peek(1)=='+'||peek(1)=='-') && isdigit((unsigned char)peek(2)))){
-                sawExp=true; adv(); if (peek()=='+'||peek()=='-') adv();
+                sawExp=true; adv(); 
+                if (peek()=='+'||peek()=='-') adv();
                 if (!isdigit((unsigned char)peek())) err("Malformed exponent");
                 while (isdigit((unsigned char)peek())) adv();
             }
         }
+        
         string lex = s.substr(start, i-start);
         uint32_t cp; size_t len;
         if (decodeUTF8(s,i,cp,len) && isIdentContinue(cp)) err("Invalid identifier starting with a number");
-        return Token{ (sawDot||sawExp) ? "T_FLOATLIT" : "T_INTLIT", lex, sl, sc};
+        
+        // Convert string to numeric value
+        int val = 0;
+        if (sawDot || sawExp) {
+            // For float, store as hash since we can't store float in int
+            val = stringHash(lex);
+        } else {
+            // For integer, convert to actual int value
+            val = stoi(lex);
+        }
+        
+        return Token{ (sawDot||sawExp) ? "T_FLOATLIT" : "T_INTLIT", val, lex, sl, sc};
     }
+    
     Token identOrKeyword()
     {
         int sl=line, sc=col; size_t start=i;
@@ -193,15 +239,22 @@ struct Lexer1
         if (!decodeUTF8(s,i,cp,len) || !isIdentStart(cp)) err("Identifier expected");
         advN(len);
         while (true){
-            size_t pos=i; if (!decodeUTF8(s,pos,cp,len)) break; if (!isIdentContinue(cp)) break; advN(len);
+            size_t pos=i; 
+            if (!decodeUTF8(s,pos,cp,len)) break; 
+            if (!isIdentContinue(cp)) break; 
+            advN(len);
         }
+        
         string lex = s.substr(start, i-start);
         auto it = kw.find(lex);
         if (it != kw.end()){
-            if (it->second=="T_BOOLLIT") return Token{it->second, lex, sl, sc};
-            return Token{it->second, "", sl, sc};
+            if (it->second=="T_BOOLLIT") {
+                int val = (lex == "true") ? 1 : 0;
+                return Token{it->second, val, lex, sl, sc};
+            }
+            return Token{it->second, 0, lex, sl, sc};
         }
-        return Token{"T_IDENTIFIER", lex, sl, sc};
+        return Token{"T_IDENTIFIER", stringHash(lex), lex, sl, sc};
     }
 
     uint32_t readHexDigits(int n)
@@ -217,7 +270,6 @@ struct Lexer1
             adv();
             k++;
         }
-
         return v;
     }
 
@@ -229,7 +281,12 @@ struct Lexer1
         while (true){
             char c=peek();
             if (c=='\0') err("Unterminated string literal");
-            if (c=='"'){ out.push_back(Token{"T_STRINGLIT", buf, sl, sc}); out.push_back(make("T_QUOTES")); adv(); break; }
+            if (c=='"'){ 
+                out.push_back(Token{"T_STRINGLIT", stringHash(buf), buf, sl, sc}); 
+                out.push_back(make("T_QUOTES")); 
+                adv(); 
+                break; 
+            }
             if (c=='\\'){
                 adv(); char e=peek(); if (e=='\0') err("Unterminated escape in string");
                 switch(e){
@@ -243,8 +300,7 @@ struct Lexer1
                     default: buf.push_back(e); adv(); break;
                 }
             } 
-            else
-            { 
+            else { 
                 buf.push_back(c); adv();
             }
         }
@@ -268,14 +324,18 @@ struct Lexer1
             {
                 if (starts(p.first))
                 {
-                    out.push_back(Token{p.second,"",line,col});
+                    out.push_back(Token{p.second, 0, p.first, line, col});
                     for (size_t k=0;k<p.first.size();++k) adv();
                     matched=true; break;
                 }
             }
             if (matched) continue;
             auto it = single.find(c);
-            if (it != single.end()){ out.push_back(Token{it->second,"",line,col}); adv(); continue; }
+            if (it != single.end()){ 
+                out.push_back(Token{it->second, 0, string(1, c), line, col}); 
+                adv(); 
+                continue; 
+            }
             err(string("Unexpected character '")+c+"'");
         }
         return out;
@@ -303,7 +363,8 @@ static string unescapeString(const string &raw)
             case 'r': out.push_back('\r'); break;
             case 'u': {
                 if (i + 4 > raw.size()) throw LexError("Invalid \\u escape");
-                uint32_t cp=0; for(int k=0;k<4;++k)
+                uint32_t cp=0; 
+                for(int k=0;k<4;++k)
                 { 
                     int hv=hexVal(raw[i++]); 
                     if(hv<0) 
@@ -314,8 +375,10 @@ static string unescapeString(const string &raw)
             }
             case 'U': {
                 if (i + 8 > raw.size()) throw LexError("Invalid \\U escape");
-                uint32_t cp=0; for(int k=0;k<8;++k)
-                { int hv=hexVal(raw[i++]); 
+                uint32_t cp=0; 
+                for(int k=0;k<8;++k)
+                { 
+                    int hv=hexVal(raw[i++]); 
                     if(hv<0) throw LexError("Invalid \\U escape"); 
                     cp=(cp<<4)|hv; 
                 }
@@ -366,7 +429,6 @@ struct Lexer2
         {'?', "T_QUESTION"},{'"',"T_QUOTES"}
     };
 
-    
     Lexer2(const string &src) : s(src)
     {
         rules = {
@@ -382,7 +444,11 @@ struct Lexer2
         };
     }
 
-    [[noreturn]] void err(const string &msg) const { ostringstream os; os<<"Line "<<line<<", Col "<<col<<": "<<msg; throw LexError(os.str()); }
+    [[noreturn]] void err(const string &msg) const { 
+        ostringstream os; 
+        os<<"Line "<<line<<", Col "<<col<<": "<<msg; 
+        throw LexError(os.str()); 
+    }
 
     bool nextToken(vector<Token> &out)
     {
@@ -413,27 +479,44 @@ struct Lexer2
 
                 if (rule.name=="LINE_COMMENT"){
                     string content = m.size()>=2 ? m[1].str() : "";
-                    out.push_back(Token{"T_COMMENT", content, tokLine, tokCol});
+                    out.push_back(Token{"T_COMMENT", stringHash(content), content, tokLine, tokCol});
                 } else if (rule.name=="BLOCK_COMMENT"){
-                    out.push_back(Token{"T_COMMENT", lex, tokLine, tokCol});
+                    out.push_back(Token{"T_COMMENT", stringHash(lex), lex, tokLine, tokCol});
                 } else if (rule.name=="STRING"){
-                    out.push_back(Token{"T_QUOTES","",tokLine,tokCol});
+                    out.push_back(Token{"T_QUOTES", 0, "", tokLine, tokCol});
                     string inside = lex.substr(1, lex.size()-2);
                     string unesc  = unescapeString(inside);
-                    out.push_back(Token{"T_STRINGLIT", unesc, tokLine, tokCol+1});
-                    out.push_back(Token{"T_QUOTES","",tokLine,tokCol});
+                    out.push_back(Token{"T_STRINGLIT", stringHash(unesc), unesc, tokLine, tokCol+1});
+                    out.push_back(Token{"T_QUOTES", 0, "", tokLine, tokCol});
                 } else if (rule.name=="HEX"){
-                    out.push_back(Token{"T_INTLIT", lex, tokLine, tokCol});
+                    // Convert hex to int
+                    int val = 0;
+                    for (size_t j = 2; j < lex.size(); ++j) {
+                        val = val * 16 + hexVal(lex[j]);
+                    }
+                    out.push_back(Token{"T_INTLIT", val, lex, tokLine, tokCol});
                 } else if (rule.name=="DEC"){
-                    bool isFloat = (lex.find('.') != string::npos) || (lex.find('e') != string::npos) || (lex.find('E') != string::npos);
-                    out.push_back(Token{ isFloat ? "T_FLOATLIT" : "T_INTLIT", lex, tokLine, tokCol});
+                    bool isFloat = (lex.find('.') != string::npos) || 
+                                   (lex.find('e') != string::npos) || 
+                                   (lex.find('E') != string::npos);
+                    int val = 0;
+                    if (isFloat) {
+                        val = stringHash(lex); // Use hash for float
+                    } else {
+                        val = stoi(lex); // Convert to actual int
+                    }
+                    out.push_back(Token{ isFloat ? "T_FLOATLIT" : "T_INTLIT", val, lex, tokLine, tokCol});
                 } else if (rule.name=="IDENT"){
                     auto it = kw.find(lex);
                     if (it != kw.end()){
-                        if (it->second=="T_BOOLLIT") out.push_back(Token{"T_BOOLLIT", lex, tokLine, tokCol});
-                        else out.push_back(Token{it->second, "", tokLine, tokCol});
+                        if (it->second=="T_BOOLLIT") {
+                            int val = (lex == "true") ? 1 : 0;
+                            out.push_back(Token{"T_BOOLLIT", val, lex, tokLine, tokCol});
+                        } else {
+                            out.push_back(Token{it->second, 0, lex, tokLine, tokCol});
+                        }
                     } else {
-                        out.push_back(Token{"T_IDENTIFIER", lex, tokLine, tokCol});
+                        out.push_back(Token{"T_IDENTIFIER", stringHash(lex), lex, tokLine, tokCol});
                     }
                 } 
                 else if (rule.name=="OP2"){
@@ -441,35 +524,19 @@ struct Lexer2
                         {"==","T_EQUALSOP"},{"!=","T_NEQ"},{"<=","T_LTE"},{">=","T_GTE"},
                         {"&&","T_ANDAND"},{"||","T_OROR"},{"<<","T_SHL"},{">>","T_SHR"},
                         {"++","T_INC"},{"--","T_DEC"},{"->","T_ARROW"},
-                        {"+=","T_PLUSEQ"},{"-=","T_MINUSEQ"},{"*=","T_MULEQ"},{" /=","T_DIVEQ"},
+                        {"+=","T_PLUSEQ"},{"-=","T_MINUSEQ"},{"*=","T_MULEQ"},{"/=","T_DIVEQ"},
                         {"%=","T_MODEQ"},{"&=","T_ANDEQ"},{"|=","T_OREQ"},{"^=","T_XOREQ"}
                     };
                     
-                    auto key = lex; if (key == "/=") key = "/=";
-                    auto it = m2.find(key);
-                    if (it == m2.end())
-                    {
-                      
-                        static const unordered_map<string,string> m2b = {
-                            {"==","T_EQUALSOP"},{"!=","T_NEQ"},{"<=","T_LTE"},{">=","T_GTE"},
-                            {"&&","T_ANDAND"},{"||","T_OROR"},{"<<","T_SHL"},{">>","T_SHR"},
-                            {"++","T_INC"},{"--","T_DEC"},{"->","T_ARROW"},
-                            {"+=","T_PLUSEQ"},{"-=","T_MINUSEQ"},{"*=","T_MULEQ"},{"/=","T_DIVEQ"},
-                            {"%=","T_MODEQ"},{"&=","T_ANDEQ"},{"|=","T_OREQ"},{"^=","T_XOREQ"}
-                        };
-                        auto it2 = m2b.find(lex);
-                        if (it2 == m2b.end()) err(string("Unknown operator: ")+lex);
-                        out.push_back(Token{it2->second, "", tokLine, tokCol});
-                    } else 
-                    {
-                        out.push_back(Token{it->second, "", tokLine, tokCol});
-                    }
+                    auto it = m2.find(lex);
+                    if (it == m2.end()) err(string("Unknown operator: ")+lex);
+                    out.push_back(Token{it->second, 0, lex, tokLine, tokCol});
                 } else if (rule.name=="OP1")
                 {
                     char c = lex[0];
                     auto it = single.find(c);
                     if (it == single.end()) err(string("Unexpected character '")+c+"'");
-                    out.push_back(Token{it->second, "", tokLine, tokCol});
+                    out.push_back(Token{it->second, 0, lex, tokLine, tokCol});
                 } else 
                 {
                     err("Unhandled rule");
@@ -489,13 +556,14 @@ struct Lexer2
     vector<Token> tokenize()
     {
         vector<Token> out;
-        while (i < s.size())
+        while(i < s.size())
         {
             if (!nextToken(out)) break;
         }
         return out;
     }
 };
+
 
 
 
@@ -574,8 +642,7 @@ int main()
     {
         return main2();
     }
-    cout << "Please enter 1 or 2 ";
+    cout << "Please enter 1 or 2";
     cout<<endl;
     return 1;
 }
-
