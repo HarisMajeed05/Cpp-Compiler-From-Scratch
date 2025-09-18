@@ -10,8 +10,8 @@ The aim is to explore compiler design concepts such as **lexical analysis**, **p
 ```text
 Cpp-Compiler-From-Scratch/
 ├── .gitignore
-├── compiler.cpp                          # Core compiler/lexer work-in-progress
-├── with regex and without regex.cpp      # Alternate lexer: with vs. without <regex>
+├── Old_Compiler.cpp                          # Core compiler/lexer work-in-progress
+├── Updated_Compiler.cpp      # Alternate lexer: with vs. without <regex>
 └── README.md
 ```
 
@@ -31,19 +31,13 @@ cd Cpp-Compiler-From-Scratch
 **Linux / macOS (g++ or clang++):**
 
 ```bash
-g++ -std=c++17 -O2 -o compiler compiler.cpp
+g++ -std=c++17 -O2 -o compiler Updated_Compiler.cpp
 ```
 
 **Windows (MinGW):**
 
 ```bash
-g++ -std=c++17 -O2 -o compiler.exe compiler.cpp
-```
-
-**Build the regex/non-regex variant (note the quotes around the filename with spaces):**
-
-```bash
-g++ -std=c++17 -O2 -o compiler_alt "with regex and without regex.cpp"
+g++ -std=c++17 -O2 -o compiler.exe Updated_Compiler.cpp
 ```
 
 ### 3) Run
