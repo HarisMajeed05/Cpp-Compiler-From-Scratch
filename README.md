@@ -76,15 +76,6 @@ TOK_RETURN, TOK_INTLIT(0), TOK_SEMICOLON, TOK_RBRACE
 - Explore simple parsing and error handling
 - Prepare the ground for IR and code generation
 
----
-
-## 🤝 Contributing
-
-Contributions are welcome!
-
-- Fork the repo and create a feature branch: `git checkout -b feat-your-topic`
-- Commit with clear messages and open a Pull Request
-- Please include small example inputs and expected outputs with changes
 
 ---
 
