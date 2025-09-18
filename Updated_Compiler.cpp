@@ -574,7 +574,7 @@ int main()
     {
         return main2();
     }
-    cout << "Please enter 1 or 2";
+    cout << "Please enter 1 or 2 ";
     cout<<endl;
     return 1;
 }
