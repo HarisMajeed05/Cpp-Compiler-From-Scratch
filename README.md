@@ -1,6 +1,6 @@
 # Cpp-Compiler-From-Scratch
 
-A toy C++ compiler implemented in C++ — built from scratch for learning purposes.  
+A toy C++ compiler implemented in C++, built from scratch for learning purposes.  
 The aim is to explore compiler design concepts such as **lexical analysis**, **parsing**, simple **semantic checks**, and (eventually) **code generation**.
 
 ---
@@ -37,7 +37,7 @@ g++ -std=c++17 -O2 -o compiler Updated_Compiler.cpp
 **Windows (MinGW):**
 
 ```bash
-g++ -std=c++17 -O2 -o compiler.exe Updated_Compiler.cpp
+g++ -o Updated_Compiler.cpp compiler.exe
 ```
 
 ### 3) Run
@@ -45,26 +45,7 @@ g++ -std=c++17 -O2 -o compiler.exe Updated_Compiler.cpp
 ```bash
 ./compiler input.cpp
 # or on Windows
-compiler.exe input.cpp
-```
-
----
-
-## 🧪 Example
-
-**Input — `input.cpp`:**
-
-```cpp
-int main() {
-    return 0;
-}
-```
-
-**Possible output (tokens/logs depending on the current phase):**
-
-```text
-TOK_INT, TOK_IDENTIFIER(main), TOK_LPAREN, TOK_RPAREN, TOK_LBRACE,
-TOK_RETURN, TOK_INTLIT(0), TOK_SEMICOLON, TOK_RBRACE
+./compiler
 ```
 
 ---
@@ -74,7 +55,6 @@ TOK_RETURN, TOK_INTLIT(0), TOK_SEMICOLON, TOK_RBRACE
 - Understand the basic stages of a compiler pipeline
 - Implement lexical analysis (with and without `<regex>`)
 - Explore simple parsing and error handling
-- Prepare the ground for IR and code generation
 
 
 ---
