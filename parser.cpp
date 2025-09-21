@@ -857,3 +857,223 @@ static void printStmt(const StmtPtr &s, int ind = 0)
         pad(ind);
         cout << "]\n";
     }
+
+    else if (s->kind == "Block")
+    {
+        pad(ind);
+        cout << "Block[\n";
+        for (auto &x : s->block)
+            printStmt(x, ind + 2);
+        pad(ind);
+        cout << "]\n";
+    }
+    else
+    {
+        pad(ind);
+        cout << "<?> stmt\n";
+    }
+}
+
+
+
+static void printDecl(const DeclPtr &d, int ind = 0)
+{
+    auto pad = [&](int n)
+    { for(int i=0;i<n;i++) cout<<' '; };
+    if (!d)
+    {
+        pad(ind);
+        cout << "null\n";
+        return;
+    }
+    if (d->kind == "FnDecl")
+    {
+        pad(ind);
+        cout << "FnDecl(type=" << d->retType << ", name=" << d->fnName << ") params[\n";
+        for (auto &p : d->params)
+        {
+            pad(ind + 2);
+            cout << p.first << " " << p.second << "\n";
+        }
+        pad(ind);
+        cout << "] body[\n";
+        for (auto &s : d->body)
+            printStmt(s, ind + 2);
+        pad(ind);
+        cout << "]\n";
+    }
+    else if (d->kind == "VarDecl")
+    {
+        pad(ind);
+        cout << "VarDecl(type=" << d->varType << ", name=" << d->varName << ")\n";
+        if (d->varInit)
+            printExpr(d->varInit, ind + 2);
+    }
+    else
+    {
+        pad(ind);
+        cout << "<?> decl\n";
+    }
+}
+
+// ------------------------------ Parser ------------------------------
+
+struct ParseError : runtime_error
+{
+    using runtime_error::runtime_error;
+};
+
+struct Parser
+{
+    vector<Token> ts;
+    size_t i = 0;
+
+    Parser() = default;
+    explicit Parser(vector<Token> toks) : ts(move(toks)) {}
+
+    const Token &peek(size_t k = 0) const
+    {
+        static Token eof{"T_EOF", 0, "", 0, 0};
+        return (i + k < ts.size() ? ts[i + k] : eof);
+    }
+    bool match(const string &t)
+    {
+        if (peek().type == t)
+        {
+            ++i;
+            return true;
+        }
+        return false;
+    }
+    const Token &expect(const string &t, const string &msg)
+    {
+        if (!match(t))
+            throw ParseError(msg + " at " + toLoc(peek()));
+        return ts[i - 1];
+    }
+    static string toLoc(const Token &t)
+    {
+        ostringstream os;
+        os << "(line " << t.line << ", col " << t.col << ")";
+        return os.str();
+    }
+
+    bool isTypeTok(const Token &t) const
+    {
+        static const unordered_set<string> types = {"T_INT", "T_FLOAT", "T_BOOL", "T_CHAR", "T_STRING", "T_VOID"};
+        return types.count(t.type) > 0;
+    }
+
+    vector<DeclPtr> parseProgram()
+    {
+        vector<DeclPtr> out;
+        while (peek().type != "T_EOF")
+        {
+            if (isTypeTok(peek()))
+            {
+                if (peek(1).type == "T_IDENTIFIER" && peek(2).type == "T_PARENL")
+                {
+                    out.push_back(parseFunc());
+                }
+                else
+                {
+                    out.push_back(parseTopVarDecl());
+                    expect("T_SEMICOLON", "Expected ';' after variable declaration");
+                }
+            }
+            else
+            {
+                throw ParseError(string("Expected declaration at ") + toLoc(peek()));
+            }
+        }
+        return out;
+    }
+
+    DeclPtr parseFunc()
+    {
+        string ty = peek().lexeme;
+        expect(peek().type, "Expected type");
+        Token name = expect("T_IDENTIFIER", "Expected function name");
+        expect("T_PARENL", "Expected '('");
+        vector<pair<string, string>> params;
+        if (peek().type != "T_PARENR")
+        {
+            while (true)
+            {
+                if (!isTypeTok(peek()))
+                    throw ParseError("Expected parameter type " + toLoc(peek()));
+                string pty = peek().lexeme;
+                expect(peek().type, "param type");
+                Token pid = expect("T_IDENTIFIER", "Expected parameter name");
+                params.push_back({pty, pid.lexeme});
+                if (!match("T_COMMA"))
+                    break;
+            }
+        }
+        expect("T_PARENR", "Expected ')'");
+        auto body = parseBlock();
+
+        auto d = make_shared<Decl>();
+        d->kind = "FnDecl";
+        d->retType = ty;
+        d->fnName = name.lexeme;
+        d->params = params;
+        d->body = move(body);
+        return d;
+    }
+
+    DeclPtr parseTopVarDecl()
+    {
+        string ty = peek().lexeme;
+        expect(peek().type, "Expected type");
+        Token id = expect("T_IDENTIFIER", "Expected variable name");
+        ExprPtr init;
+        if (match("T_ASSIGNOP"))
+            init = parseExpr();
+        auto d = make_shared<Decl>();
+        d->kind = "VarDecl";
+        d->varType = ty;
+        d->varName = id.lexeme;
+        d->varInit = init;
+        return d;
+    }
+
+    vector<StmtPtr> parseBlock()
+    {
+        expect("T_BRACEL", "Expected '{'");
+        vector<StmtPtr> out;
+        while (peek().type != "T_BRACER")
+            out.push_back(parseStmt());
+        expect("T_BRACER", "Expected '}'");
+        return out;
+    }
+
+    StmtPtr parseStmt()
+    {
+        if (peek().type == "T_BRACEL")
+        {
+            auto s = make_shared<Stmt>();
+            s->kind = "Block";
+            s->block = parseBlock();
+            return s;
+        }
+
+
+        if (peek().type == "T_IF")
+        {
+            i++;
+            expect("T_PARENL", "Expected '(' after if");
+            auto cond = parseExpr();
+            expect("T_PARENR", "Expected ')'");
+            auto thenS = parseStmt();
+            vector<StmtPtr> elseBlk;
+            if (match("T_ELSE"))
+            {
+                auto e = parseStmt();
+                if (e->kind == "Block")
+                    elseBlk = e->block;
+                else
+                    elseBlk = {e};
+            }
+
+            
