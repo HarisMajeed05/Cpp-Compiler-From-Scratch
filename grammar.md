@@ -1,6 +1,6 @@
-# Mini C++-like Language Grammar (BNF/EBNF)
+# C++ - Language Grammar (BNF/EBNF)
 
-This document defines the syntax of the simplified C++-like language supported by the lexer and parser implementation.  
+This document defines the syntax of the simplified C++ - language supported by the lexer and parser implementation.  
 It includes lexical rules, grammar, operator precedence, error types, and notes.
 
 ---
