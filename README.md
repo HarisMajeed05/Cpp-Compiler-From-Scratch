@@ -10,8 +10,8 @@ The aim is to explore compiler design concepts such as **lexical analysis**, **p
 ```text
 Cpp-Compiler-From-Scratch/
 ├── .gitignore
-├── Updated_Compiler.cpp                          
-├── parser.cpp          # Core compiler/parser work-in-progress
+├── Updated_Compiler.cpp    # Core Lexer                      
+├── parser.cpp              # Core parser work-in-progress
 └── README.md
 ```
 
@@ -31,7 +31,7 @@ cd Cpp-Compiler-From-Scratch
 **Linux / macOS (g++ or clang++):**
 
 ```bash
-g++ -std=c++17 -O2 -o compiler Updated_Compiler.cpp
+g++ -std=c++17 -O2 -o compiler parser.cpp
 ```
 
 **Windows (MinGW):**
@@ -43,8 +43,6 @@ g++ -o parser.cpp compiler.exe
 ### 3) Run
 
 ```bash
-./compiler input.cpp
-# or on Windows
 ./compiler
 ```
 
