@@ -1113,3 +1113,318 @@ struct Parser
         return lhs;
     }
     
+ExprPtr parseOr()
+    {
+        auto e = parseAnd();
+        while (match("T_OROR"))
+        {
+            Token op = ts[i - 1];
+            auto r = parseAnd();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+    ExprPtr parseAnd()
+    {
+        auto e = parseEq();
+        while (match("T_ANDAND"))
+        {
+            Token op = ts[i - 1];
+            auto r = parseEq();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+    ExprPtr parseEq()
+    {
+        auto e = parseRel();
+        while (peek().type == "T_EQUALSOP" || peek().type == "T_NEQ")
+        {
+            Token op = peek();
+            i++;
+            auto r = parseRel();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+    ExprPtr parseRel()
+    {
+        auto e = parseAdd();
+        while (peek().type == "T_LT" || peek().type == "T_GT" || peek().type == "T_LTE" || peek().type == "T_GTE")
+        {
+            Token op = peek();
+            i++;
+            auto r = parseAdd();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+    ExprPtr parseAdd()
+    {
+        auto e = parseMul();
+        while (peek().type == "T_PLUS" || peek().type == "T_MINUS")
+        {
+            Token op = peek();
+            i++;
+            auto r = parseMul();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+    ExprPtr parseMul()
+    {
+        auto e = parseUnary();
+        while (peek().type == "T_STAR" || peek().type == "T_SLASH" || peek().type == "T_PERCENT")
+        {
+            Token op = peek();
+            i++;
+            auto r = parseUnary();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+
+    ExprPtr parseUnary()
+    {
+        if (peek().type == "T_PLUS" || peek().type == "T_MINUS" || peek().type == "T_BANG")
+        {
+            Token op = peek();
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Unary";
+            e->op = op.type;
+            e->args = {parseUnary()};
+            return e;
+        }
+        return parsePostfix();
+    }
+
+    ExprPtr parsePostfix()
+    {
+        auto e = parsePrimary();
+        while (true)
+        {
+            if (match("T_PARENL"))
+            {
+                auto call = make_shared<Expr>();
+                call->kind = "Call";
+                if (e->kind == "Identifier")
+                    call->value = e->value;
+                else
+                    throw ParseError("Call target must be identifier at " + toLoc(peek()));
+                if (peek().type != "T_PARENR")
+                {
+                    while (true)
+                    {
+                        call->args.push_back(parseExpr());
+                        if (!match("T_COMMA"))
+                            break;
+                    }
+                }
+                expect("T_PARENR", "Expected ')'");
+                e = call;
+                continue;
+            }
+            if (match("T_BRACKETL"))
+            {
+                auto idx = make_shared<Expr>();
+                idx->kind = "Index";
+                idx->args.push_back(e);
+                idx->args.push_back(parseExpr());
+                expect("T_BRACKETR", "Expected ']'");
+                e = idx;
+                continue;
+            }
+            break;
+        }
+        return e;
+    }
+
+    ExprPtr parsePrimary()
+    {
+        const Token &t = peek();
+        if (t.type == "T_INTLIT")
+        {
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Literal";
+            e->litType = "T_INTLIT";
+            e->value = t.lexeme;
+            return e;
+        }
+        if (t.type == "T_FLOATLIT")
+        {
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Literal";
+            e->litType = "T_FLOATLIT";
+            e->value = t.lexeme;
+            return e;
+        }
+        if (t.type == "T_STRINGLIT")
+        {
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Literal";
+            e->litType = "T_STRINGLIT";
+            e->value = t.lexeme;
+            return e;
+        }
+        if (t.type == "T_CHARLIT")
+        {
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Literal";
+            e->litType = "T_CHARLIT";
+            e->value = t.lexeme;
+            return e;
+        }
+        if (t.type == "T_BOOLLIT")
+        {
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Literal";
+            e->litType = "T_BOOLLIT";
+            e->value = t.lexeme;
+            return e;
+        }
+        if (t.type == "T_IDENTIFIER")
+        {
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Identifier";
+            e->value = t.lexeme;
+            return e;
+        }
+        if (match("T_PARENL"))
+        {
+            auto e = make_shared<Expr>();
+            e->kind = "Grouping";
+            e->args = {parseExpr()};
+            expect("T_PARENR", "Expected ')'");
+            return e;
+        }
+        throw ParseError(string("Expected expression at ") + toLoc(t));
+    }
+};
+
+// ------------------------------ Demo main ------------------------------
+
+static const string SAMPLE_CPP = R"(
+
+int add(int x, int y) { 
+    return x + y;
+}
+
+int mainFn() {
+    int a = 3;
+    int b = 6;
+    int f = 1;
+    int z = 2;
+    int h = 6 * f + 3 * 2 - b * b * z * z;
+    int c = 10 - (-b * 10 + 12) + (5 - 10);
+
+    // control flow
+    if (a == 3) { a = a + 1; } else { a = a - 1; }
+
+    while (a < 10) { a = a + 1; }
+
+    for (int i = 0; i < 5; i = i + 1) { b = b + i; }
+
+    return add(a, b);
+}
+)";
+
+static void printTokens(const vector<Token> &toks)
+{
+    cout << "Tokens:\n[";
+    bool first = true;
+    for (const auto &t : toks)
+    {
+        if (t.type == "T_EOF")
+            break; // don't print EOF
+        if (!first)
+            cout << ", ";
+        cout << showToken(t);
+        first = false;
+    }
+    cout << "]\n";
+}
+
+int main()
+{
+    cout << "Run which lexer?\n1) manual (ASCII, C++ subset)\n2) regex (C++ subset)\n> ";
+    int choice = 0;
+    if (!(cin >> choice))
+    {
+        cerr << "Invalid input\n";
+        return 1;
+    }
+    string input = SAMPLE_CPP;
+
+    try
+    {
+        vector<Token> toks;
+        if (choice == 1)
+        {
+            Lexer1 lx{input};
+            toks = lx.tokenize();
+        }
+        else if (choice == 2)
+        {
+            Lexer2 lx{input};
+            toks = lx.tokenize();
+        }
+        else
+        {
+            cerr << "Please enter 1 or 2\n";
+            return 1;
+        }
+
+        // ---- NEW: print tokens first ----
+        printTokens(toks);
+
+        Parser p{toks};
+        auto decls = p.parseProgram();
+
+        cout << "AST:\n[\n";
+        for (auto &d : decls)
+            printDecl(d, 2);
+        cout << "]\n";
+    }
+    catch (const LexError &e)
+    {
+        cerr << "LexerError: " << e.what() << "\n";
+        return 1;
+    }
+    catch (const ParseError &e)
+    {
+        cerr << "ParseError: " << e.what() << "\n";
+        return 1;
+    }
+    return 0;
+}
