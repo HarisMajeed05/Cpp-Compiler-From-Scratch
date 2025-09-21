@@ -1076,4 +1076,234 @@ struct Parser
                     elseBlk = {e};
             }
 
-            
+            auto s = make_shared<Stmt>();
+            s->kind = "If";
+            s->ifCond = cond;
+            if (thenS->kind == "Block")
+                s->ifBlock = thenS->block;
+            else
+                s->ifBlock = {thenS};
+            s->elseBlock = move(elseBlk);
+            return s;
+        }
+
+        if (peek().type == "T_WHILE")
+        {
+            i++;
+            expect("T_PARENL", "Expected '(' after while");
+            auto cond = parseExpr();
+            expect("T_PARENR", "Expected ')'");
+            auto body = parseStmt();
+            auto s = make_shared<Stmt>();
+            s->kind = "While";
+            s->whileCond = cond;
+            if (body->kind == "Block")
+                s->whileBlock = body->block;
+            else
+                s->whileBlock = {body};
+            return s;
+        }
+
+        if (peek().type == "T_FOR")
+        {
+            i++;
+            expect("T_PARENL", "Expected '(' after for");
+            auto s = make_shared<Stmt>();
+            s->kind = "For";
+            if (isTypeTok(peek()))
+            {
+                s->hasInitDecl = true;
+                string ty = peek().lexeme;
+                expect(peek().type, "type");
+                Token id = expect("T_IDENTIFIER", "Expected identifier");
+                s->forInitType = ty;
+                s->forInitName = id.lexeme;
+                if (match("T_ASSIGNOP"))
+                    s->forInitExpr = parseExpr();
+                expect("T_SEMICOLON", "Expected ';' after for-init");
+            }
+            else
+            {
+                if (peek().type != "T_SEMICOLON")
+                    s->expr = parseExpr();
+                expect("T_SEMICOLON", "Expected ';' after for-init expr");
+            }
+            if (peek().type != "T_SEMICOLON")
+                s->forCond = parseExpr();
+            expect("T_SEMICOLON", "Expected ';' after for-cond");
+            if (peek().type != "T_PARENR")
+                s->forUpdt = parseExpr();
+            expect("T_PARENR", "Expected ')'");
+            auto body = parseStmt();
+            if (body->kind == "Block")
+                s->forBlock = body->block;
+            else
+                s->forBlock = {body};
+            return s;
+        }
+
+        if (peek().type == "T_RETURN")
+        {
+            i++;
+            ExprPtr e;
+            if (peek().type != "T_SEMICOLON")
+                e = parseExpr();
+            expect("T_SEMICOLON", "Expected ';' after return");
+            auto s = make_shared<Stmt>();
+            s->kind = "Return";
+            s->ret = e;
+            return s;
+        }
+
+        if (isTypeTok(peek()))
+        {
+            string ty = peek().lexeme;
+            expect(peek().type, "type");
+            Token id = expect("T_IDENTIFIER", "Expected identifier");
+            ExprPtr init;
+            if (match("T_ASSIGNOP"))
+                init = parseExpr();
+            expect("T_SEMICOLON", "Expected ';' after declaration");
+            auto s = make_shared<Stmt>();
+            s->kind = "VarDecl";
+            s->typeTok = ty;
+            s->name = id.lexeme;
+            s->init = init;
+            return s;
+        }
+
+        if (peek().type != "T_SEMICOLON")
+        {
+            auto e = parseExpr();
+            expect("T_SEMICOLON", "Expected ';' after expression");
+            auto s = make_shared<Stmt>();
+            s->kind = "ExprStmt";
+            s->expr = e;
+            return s;
+        }
+        expect("T_SEMICOLON", "Expected ';'");
+        auto s = make_shared<Stmt>();
+        s->kind = "ExprStmt";
+        return s;
+    }
+
+
+    // Expressions (precedence climbing)
+    ExprPtr parseExpr() { return parseAssign(); }
+    ExprPtr parseAssign()
+    {
+        auto lhs = parseOr();
+        if (match("T_ASSIGNOP"))
+        {
+            Token op = ts[i - 1];
+            auto rhs = parseAssign();
+            auto e = make_shared<Expr>();
+            e->kind = "Binary";
+            e->op = op.type;
+            e->args = {lhs, rhs};
+            return e;
+        }
+        return lhs;
+    }
+
+
+
+    ExprPtr parseOr()
+    {
+        auto e = parseAnd();
+        while (match("T_OROR"))
+        {
+            Token op = ts[i - 1];
+            auto r = parseAnd();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+    ExprPtr parseAnd()
+    {
+        auto e = parseEq();
+        while (match("T_ANDAND"))
+        {
+            Token op = ts[i - 1];
+            auto r = parseEq();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+
+    ExprPtr parseEq()
+    {
+        auto e = parseRel();
+        while (peek().type == "T_EQUALSOP" || peek().type == "T_NEQ")
+        {
+            Token op = peek();
+            i++;
+            auto r = parseRel();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+
+
+    ExprPtr parseRel()
+    {
+        auto e = parseAdd();
+        while (peek().type == "T_LT" || peek().type == "T_GT" || peek().type == "T_LTE" || peek().type == "T_GTE")
+        {
+            Token op = peek();
+            i++;
+            auto r = parseAdd();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+
+    ExprPtr parseAdd()
+    {
+        auto e = parseMul();
+        while (peek().type == "T_PLUS" || peek().type == "T_MINUS")
+        {
+            Token op = peek();
+            i++;
+            auto r = parseMul();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+
+    ExprPtr parseMul()
+    {
+        auto e = parseUnary();
+        while (peek().type == "T_STAR" || peek().type == "T_SLASH" || peek().type == "T_PERCENT")
+        {
+            Token op = peek();
+            i++;
+            auto r = parseUnary();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
