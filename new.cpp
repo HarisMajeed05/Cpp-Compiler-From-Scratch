@@ -43,8 +43,8 @@ static int stringHash(const string &str)
 
 struct Token
 {
-    string type;
-    int value = 0;
+    string type;   // e.g., T_INT, T_IDENTIFIER, T_PARENL, ...
+    int value = 0; // payload as int (see notes below)
     string lexeme; // original text / unescaped content for strings/chars
     int line = 1;
     int col = 1;
@@ -410,7 +410,7 @@ struct Lexer2
     vector<Rule> rules = {
         {"WS", regex(R"(^[ \t\r\n\v\f]+)"), true},
         {"LCOM", regex(R"(^//[^\n]*)"), false},
-        {"BCOM", regex(R"(^/\[\s\S]?\*/)"), false},
+        {"BCOM", regex(R"(^/\*[\s\S]*?\*/)"), false},
         {"STR", regex(R"(^"(?:\\["'\\ntr]|\\.|[^"\\])*")"), false},
         {"CHR", regex(R"(^'(?:\\['"\\ntr]|\\.|[^'\\])')"), false},
         {"HEX", regex(R"(^0[xX][0-9A-Fa-f]+(?![A-Za-z0-9_]))"), false},
@@ -648,6 +648,7 @@ struct Lexer2
         return out;
     }
 };
+
 // ------------------------------ AST ------------------------------
 
 struct Expr;
@@ -857,3 +858,658 @@ static void printStmt(const StmtPtr &s, int ind = 0)
         pad(ind);
         cout << "]\n";
     }
+    else if (s->kind == "Block")
+    {
+        pad(ind);
+        cout << "Block[\n";
+        for (auto &x : s->block)
+            printStmt(x, ind + 2);
+        pad(ind);
+        cout << "]\n";
+    }
+    else
+    {
+        pad(ind);
+        cout << "<?> stmt\n";
+    }
+}
+
+static void printDecl(const DeclPtr &d, int ind = 0)
+{
+    auto pad = [&](int n)
+    { for(int i=0;i<n;i++) cout<<' '; };
+    if (!d)
+    {
+        pad(ind);
+        cout << "null\n";
+        return;
+    }
+    if (d->kind == "FnDecl")
+    {
+        pad(ind);
+        cout << "FnDecl(type=" << d->retType << ", name=" << d->fnName << ") params[\n";
+        for (auto &p : d->params)
+        {
+            pad(ind + 2);
+            cout << p.first << " " << p.second << "\n";
+        }
+        pad(ind);
+        cout << "] body[\n";
+        for (auto &s : d->body)
+            printStmt(s, ind + 2);
+        pad(ind);
+        cout << "]\n";
+    }
+    else if (d->kind == "VarDecl")
+    {
+        pad(ind);
+        cout << "VarDecl(type=" << d->varType << ", name=" << d->varName << ")\n";
+        if (d->varInit)
+            printExpr(d->varInit, ind + 2);
+    }
+    else
+    {
+        pad(ind);
+        cout << "<?> decl\n";
+    }
+}
+
+// ------------------------------ Parser ------------------------------
+
+struct ParseError : runtime_error
+{
+    using runtime_error::runtime_error;
+};
+
+struct Parser
+{
+    vector<Token> ts;
+    size_t i = 0;
+
+    Parser() = default;
+    explicit Parser(vector<Token> toks) : ts(move(toks)) {}
+
+    const Token &peek(size_t k = 0) const
+    {
+        static Token eof{"T_EOF", 0, "", 0, 0};
+        return (i + k < ts.size() ? ts[i + k] : eof);
+    }
+    bool match(const string &t)
+    {
+        if (peek().type == t)
+        {
+            ++i;
+            return true;
+        }
+        return false;
+    }
+    const Token &expect(const string &t, const string &msg)
+    {
+        if (!match(t))
+            throw ParseError(msg + " at " + toLoc(peek()));
+        return ts[i - 1];
+    }
+    static string toLoc(const Token &t)
+    {
+        ostringstream os;
+        os << "(line " << t.line << ", col " << t.col << ")";
+        return os.str();
+    }
+
+    bool isTypeTok(const Token &t) const
+    {
+        static const unordered_set<string> types = {"T_INT", "T_FLOAT", "T_BOOL", "T_CHAR", "T_STRING", "T_VOID"};
+        return types.count(t.type) > 0;
+    }
+
+    vector<DeclPtr> parseProgram()
+    {
+        vector<DeclPtr> out;
+        while (peek().type != "T_EOF")
+        {
+            if (isTypeTok(peek()))
+            {
+                if (peek(1).type == "T_IDENTIFIER" && peek(2).type == "T_PARENL")
+                {
+                    out.push_back(parseFunc());
+                }
+                else
+                {
+                    out.push_back(parseTopVarDecl());
+                    expect("T_SEMICOLON", "Expected ';' after variable declaration");
+                }
+            }
+            else
+            {
+                throw ParseError(string("Expected declaration at ") + toLoc(peek()));
+            }
+        }
+        return out;
+    }
+
+    DeclPtr parseFunc()
+    {
+        string ty = peek().lexeme;
+        expect(peek().type, "Expected type");
+        Token name = expect("T_IDENTIFIER", "Expected function name");
+        expect("T_PARENL", "Expected '('");
+        vector<pair<string, string>> params;
+        if (peek().type != "T_PARENR")
+        {
+            while (true)
+            {
+                if (!isTypeTok(peek()))
+                    throw ParseError("Expected parameter type " + toLoc(peek()));
+                string pty = peek().lexeme;
+                expect(peek().type, "param type");
+                Token pid = expect("T_IDENTIFIER", "Expected parameter name");
+                params.push_back({pty, pid.lexeme});
+                if (!match("T_COMMA"))
+                    break;
+            }
+        }
+        expect("T_PARENR", "Expected ')'");
+        auto body = parseBlock();
+
+        auto d = make_shared<Decl>();
+        d->kind = "FnDecl";
+        d->retType = ty;
+        d->fnName = name.lexeme;
+        d->params = params;
+        d->body = move(body);
+        return d;
+    }
+
+    DeclPtr parseTopVarDecl()
+    {
+        string ty = peek().lexeme;
+        expect(peek().type, "Expected type");
+        Token id = expect("T_IDENTIFIER", "Expected variable name");
+        ExprPtr init;
+        if (match("T_ASSIGNOP"))
+            init = parseExpr();
+        auto d = make_shared<Decl>();
+        d->kind = "VarDecl";
+        d->varType = ty;
+        d->varName = id.lexeme;
+        d->varInit = init;
+        return d;
+    }
+
+    vector<StmtPtr> parseBlock()
+    {
+        expect("T_BRACEL", "Expected '{'");
+        vector<StmtPtr> out;
+        while (peek().type != "T_BRACER")
+            out.push_back(parseStmt());
+        expect("T_BRACER", "Expected '}'");
+        return out;
+    }
+
+    StmtPtr parseStmt()
+    {
+        if (peek().type == "T_BRACEL")
+        {
+            auto s = make_shared<Stmt>();
+            s->kind = "Block";
+            s->block = parseBlock();
+            return s;
+        }
+
+        if (peek().type == "T_IF")
+        {
+            i++;
+            expect("T_PARENL", "Expected '(' after if");
+            auto cond = parseExpr();
+            expect("T_PARENR", "Expected ')'");
+            auto thenS = parseStmt();
+            vector<StmtPtr> elseBlk;
+            if (match("T_ELSE"))
+            {
+                auto e = parseStmt();
+                if (e->kind == "Block")
+                    elseBlk = e->block;
+                else
+                    elseBlk = {e};
+            }
+            auto s = make_shared<Stmt>();
+            s->kind = "If";
+            s->ifCond = cond;
+            if (thenS->kind == "Block")
+                s->ifBlock = thenS->block;
+            else
+                s->ifBlock = {thenS};
+            s->elseBlock = move(elseBlk);
+            return s;
+        }
+
+        if (peek().type == "T_WHILE")
+        {
+            i++;
+            expect("T_PARENL", "Expected '(' after while");
+            auto cond = parseExpr();
+            expect("T_PARENR", "Expected ')'");
+            auto body = parseStmt();
+            auto s = make_shared<Stmt>();
+            s->kind = "While";
+            s->whileCond = cond;
+            if (body->kind == "Block")
+                s->whileBlock = body->block;
+            else
+                s->whileBlock = {body};
+            return s;
+        }
+
+        if (peek().type == "T_FOR")
+        {
+            i++;
+            expect("T_PARENL", "Expected '(' after for");
+            auto s = make_shared<Stmt>();
+            s->kind = "For";
+            if (isTypeTok(peek()))
+            {
+                s->hasInitDecl = true;
+                string ty = peek().lexeme;
+                expect(peek().type, "type");
+                Token id = expect("T_IDENTIFIER", "Expected identifier");
+                s->forInitType = ty;
+                s->forInitName = id.lexeme;
+                if (match("T_ASSIGNOP"))
+                    s->forInitExpr = parseExpr();
+                expect("T_SEMICOLON", "Expected ';' after for-init");
+            }
+            else
+            {
+                if (peek().type != "T_SEMICOLON")
+                    s->expr = parseExpr();
+                expect("T_SEMICOLON", "Expected ';' after for-init expr");
+            }
+            if (peek().type != "T_SEMICOLON")
+                s->forCond = parseExpr();
+            expect("T_SEMICOLON", "Expected ';' after for-cond");
+            if (peek().type != "T_PARENR")
+                s->forUpdt = parseExpr();
+            expect("T_PARENR", "Expected ')'");
+            auto body = parseStmt();
+            if (body->kind == "Block")
+                s->forBlock = body->block;
+            else
+                s->forBlock = {body};
+            return s;
+        }
+
+        if (peek().type == "T_RETURN")
+        {
+            i++;
+            ExprPtr e;
+            if (peek().type != "T_SEMICOLON")
+                e = parseExpr();
+            expect("T_SEMICOLON", "Expected ';' after return");
+            auto s = make_shared<Stmt>();
+            s->kind = "Return";
+            s->ret = e;
+            return s;
+        }
+
+        if (isTypeTok(peek()))
+        {
+            string ty = peek().lexeme;
+            expect(peek().type, "type");
+            Token id = expect("T_IDENTIFIER", "Expected identifier");
+            ExprPtr init;
+            if (match("T_ASSIGNOP"))
+                init = parseExpr();
+            expect("T_SEMICOLON", "Expected ';' after declaration");
+            auto s = make_shared<Stmt>();
+            s->kind = "VarDecl";
+            s->typeTok = ty;
+            s->name = id.lexeme;
+            s->init = init;
+            return s;
+        }
+
+        if (peek().type != "T_SEMICOLON")
+        {
+            auto e = parseExpr();
+            expect("T_SEMICOLON", "Expected ';' after expression");
+            auto s = make_shared<Stmt>();
+            s->kind = "ExprStmt";
+            s->expr = e;
+            return s;
+        }
+        expect("T_SEMICOLON", "Expected ';'");
+        auto s = make_shared<Stmt>();
+        s->kind = "ExprStmt";
+        return s;
+    }
+
+    // Expressions (precedence climbing)
+    ExprPtr parseExpr() { return parseAssign(); }
+    ExprPtr parseAssign()
+    {
+        auto lhs = parseOr();
+        if (match("T_ASSIGNOP"))
+        {
+            Token op = ts[i - 1];
+            auto rhs = parseAssign();
+            auto e = make_shared<Expr>();
+            e->kind = "Binary";
+            e->op = op.type;
+            e->args = {lhs, rhs};
+            return e;
+        }
+        return lhs;
+    }
+    ExprPtr parseOr()
+    {
+        auto e = parseAnd();
+        while (match("T_OROR"))
+        {
+            Token op = ts[i - 1];
+            auto r = parseAnd();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+    ExprPtr parseAnd()
+    {
+        auto e = parseEq();
+        while (match("T_ANDAND"))
+        {
+            Token op = ts[i - 1];
+            auto r = parseEq();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+    ExprPtr parseEq()
+    {
+        auto e = parseRel();
+        while (peek().type == "T_EQUALSOP" || peek().type == "T_NEQ")
+        {
+            Token op = peek();
+            i++;
+            auto r = parseRel();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+    ExprPtr parseRel()
+    {
+        auto e = parseAdd();
+        while (peek().type == "T_LT" || peek().type == "T_GT" || peek().type == "T_LTE" || peek().type == "T_GTE")
+        {
+            Token op = peek();
+            i++;
+            auto r = parseAdd();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+    ExprPtr parseAdd()
+    {
+        auto e = parseMul();
+        while (peek().type == "T_PLUS" || peek().type == "T_MINUS")
+        {
+            Token op = peek();
+            i++;
+            auto r = parseMul();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+    ExprPtr parseMul()
+    {
+        auto e = parseUnary();
+        while (peek().type == "T_STAR" || peek().type == "T_SLASH" || peek().type == "T_PERCENT")
+        {
+            Token op = peek();
+            i++;
+            auto r = parseUnary();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+    ExprPtr parseUnary()
+    {
+        if (peek().type == "T_PLUS" || peek().type == "T_MINUS" || peek().type == "T_BANG")
+        {
+            Token op = peek();
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Unary";
+            e->op = op.type;
+            e->args = {parseUnary()};
+            return e;
+        }
+        return parsePostfix();
+    }
+    ExprPtr parsePostfix()
+    {
+        auto e = parsePrimary();
+        while (true)
+        {
+            if (match("T_PARENL"))
+            {
+                auto call = make_shared<Expr>();
+                call->kind = "Call";
+                if (e->kind == "Identifier")
+                    call->value = e->value;
+                else
+                    throw ParseError("Call target must be identifier at " + toLoc(peek()));
+                if (peek().type != "T_PARENR")
+                {
+                    while (true)
+                    {
+                        call->args.push_back(parseExpr());
+                        if (!match("T_COMMA"))
+                            break;
+                    }
+                }
+                expect("T_PARENR", "Expected ')'");
+                e = call;
+                continue;
+            }
+            if (match("T_BRACKETL"))
+            {
+                auto idx = make_shared<Expr>();
+                idx->kind = "Index";
+                idx->args.push_back(e);
+                idx->args.push_back(parseExpr());
+                expect("T_BRACKETR", "Expected ']'");
+                e = idx;
+                continue;
+            }
+            break;
+        }
+        return e;
+    }
+    ExprPtr parsePrimary()
+    {
+        const Token &t = peek();
+        if (t.type == "T_INTLIT")
+        {
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Literal";
+            e->litType = "T_INTLIT";
+            e->value = t.lexeme;
+            return e;
+        }
+        if (t.type == "T_FLOATLIT")
+        {
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Literal";
+            e->litType = "T_FLOATLIT";
+            e->value = t.lexeme;
+            return e;
+        }
+        if (t.type == "T_STRINGLIT")
+        {
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Literal";
+            e->litType = "T_STRINGLIT";
+            e->value = t.lexeme;
+            return e;
+        }
+        if (t.type == "T_CHARLIT")
+        {
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Literal";
+            e->litType = "T_CHARLIT";
+            e->value = t.lexeme;
+            return e;
+        }
+        if (t.type == "T_BOOLLIT")
+        {
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Literal";
+            e->litType = "T_BOOLLIT";
+            e->value = t.lexeme;
+            return e;
+        }
+        if (t.type == "T_IDENTIFIER")
+        {
+            i++;
+            auto e = make_shared<Expr>();
+            e->kind = "Identifier";
+            e->value = t.lexeme;
+            return e;
+        }
+        if (match("T_PARENL"))
+        {
+            auto e = make_shared<Expr>();
+            e->kind = "Grouping";
+            e->args = {parseExpr()};
+            expect("T_PARENR", "Expected ')'");
+            return e;
+        }
+        throw ParseError(string("Expected expression at ") + toLoc(t));
+    }
+};
+
+// ------------------------------ Demo main ------------------------------
+
+static const string SAMPLE_CPP = R"(
+
+int add(int x, int y) { 
+    return x + y;
+}
+
+int mainFn() {
+    int a = 3;
+    int b = 6;
+    int f = 1;
+    int z = 2;
+    int h = 6 * f + 3 * 2 - b * b * z * z;
+    int c = 10 - (-b * 10 + 12) + (5 - 10);
+
+    // control flow
+    if (a == 3) { a = a + 1; } else { a = a - 1; }
+
+    while (a < 10) { a = a + 1; }
+
+    for (int i = 0; i < 5; i = i + 1) { b = b + i; }
+
+    return add(a, b);
+}
+)";
+
+static void printTokens(const vector<Token> &toks)
+{
+    cout << "Tokens:\n[";
+    bool first = true;
+    for (const auto &t : toks)
+    {
+        if (t.type == "T_EOF")
+            break;
+        if (!first)
+            cout << ", ";
+        cout << showToken(t);
+        first = false;
+    }
+    cout << "]\n";
+}
+
+int main()
+{
+    cout << "Run which lexer?\n1) manual (ASCII, C++ subset)\n2) regex (C++ subset)\n> ";
+    int choice = 0;
+    if (!(cin >> choice))
+    {
+        cerr << "Invalid input\n";
+        return 1;
+    }
+
+    string input = SAMPLE_CPP;
+
+    try
+    {
+        vector<Token> toks;
+        if (choice == 1)
+        {
+            Lexer1 lx{input};
+            toks = lx.tokenize();
+        }
+        else if (choice == 2)
+        {
+            Lexer2 lx{input};
+            toks = lx.tokenize();
+        }
+        else
+        {
+            cerr << "Please enter 1 or 2\n";
+            return 1;
+        }
+
+        // print tokens first (now includes int value)
+        printTokens(toks);
+
+        Parser p{toks};
+        auto decls = p.parseProgram();
+
+        cout << "AST:\n[\n";
+        for (auto &d : decls)
+            printDecl(d, 2);
+        cout << "]\n";
+    }
+    catch (const LexError &e)
+    {
+        cerr << "LexerError: " << e.what() << "\n";
+        return 1;
+    }
+    catch (const ParseError &e)
+    {
+        cerr << "ParseError: " << e.what() << "\n";
+        return 1;
+    }
+    return 0;
+}
