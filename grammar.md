@@ -1,75 +1,137 @@
-This is the EBNF/BNF for the language accepted by the provided parser:
-Top-level: function definitions and global var declarations
-Statements: {}, if/else, while, for, return, expression/empty
-Expressions: =, ||, &&, == !=, < > <= >=, + -, * / %, unary + - !, calls (), indexing [], grouping ( )
-Literals: int, float, bool, char, string
-Identifiers: ASCII [A-Za-z_][A-Za-z0-9_]*
-Comments: // ... and /* ... */ are ignored by the lexer
+# Mini C++-like Language Grammar (BNF/EBNF)
 
-1) Program & Declarations
-program         ::= { declaration } EOF ;
-declaration     ::= function
-                  | global_var_decl ";" ;
-function        ::= type identifier "(" [ parameter_list ] ")" block ;
-parameter_list  ::= parameter { "," parameter } ;
-parameter       ::= type identifier ;
-global_var_decl ::= type identifier [ "=" expression ] ;
+This document defines the syntax of the simplified C++-like language supported by the lexer and parser implementation.  
+It includes lexical rules, grammar, operator precedence, error types, and notes.
 
-2) Statements
-statement       ::= block
-                  | "if" "(" expression ")" statement [ "else" statement ]
-                  | "while" "(" expression ")" statement
-                  | for_statement
-                  | "return" [ expression ] ";"
-                  | var_decl ";"
-                  | [ expression ] ";"                 (* expression stmt or empty ";" *)
-block           ::= "{" { statement } "}" ;
-var_decl        ::= type identifier [ "=" expression ] ;
-for_statement   ::= "for" "("
-                      ( var_decl ";"                   (* decl-init * )
-                      | [ expression ] ";" )           (* expr-init or empty * )
-                      [ expression ] ";"               (* condition optional * )
-                      [ expression ]                   (* update optional * )
-                    ")" statement ;
+---
 
-3) Types
-type            ::= "int" | "float" | "bool" | "char" | "string" | "void" ;
+## Grammar Specification
 
-4) Expressions
-expression      ::= assignment ;
-assignment      ::= identifier "=" assignment          (* right-associative * )
-                  | logic_or ;
-logic_or        ::= logic_and { "||" logic_and } ;
-logic_and       ::= equality  { "&&" equality  } ;
-equality        ::= relational { ("==" | "!=") relational } ;
-relational      ::= additive  { ("<" | ">" | "<=" | ">=") additive } ;
-additive        ::= multiplicative { ("+" | "-") multiplicative } ;
-multiplicative  ::= unary { ("*" | "/" | "%") unary } ;
-unary           ::= ("+" | "-" | "!") unary
-                  | postfix ;
-postfix         ::= primary { call_suffix | index_suffix } ;
-call_suffix     ::= "(" [ argument_list ] ")" ;
-index_suffix    ::= "[" expression "]" ;
-argument_list   ::= expression { "," expression } ;
-primary         ::= literal
-                  | identifier
-                  | "(" expression ")" ;
+```ebnf
+(* ======================== *)
+(* 1. Lexical Structure     *)
+(* ======================== *)
 
+letter        ::= "A"… "Z" | "a"… "z"
+digit         ::= "0"… "9"
+underscore    ::= "_"
+non_ascii     ::= any UTF-8 codepoint > U+007F
+ident_start   ::= letter | underscore | non_ascii
+ident_cont    ::= ident_start | digit
 
-5) Lexical (tokens)
-identifier      ::= letter { letter | digit | "_" } ;
-letter          ::= "A"…"Z" | "a"…"z" | "_" ;
-digit           ::= "0"…"9" ;
-int_lit         ::= digit { digit } ;
-float_lit       ::= digit { digit }
-                    [ "." digit { digit } ]
-                    [ ("e" | "E") [ "+" | "-" ] digit { digit } ]
-                  | digit { digit } "." digit { digit }
-                    [ ("e" | "E") [ "+" | "-" ] digit { digit } ] ;
-bool_lit        ::= "true" | "false" ;
-char_lit        ::= "'" char_body "'" ;
-char_body       ::= escape | any_char_except("'", "\\", newline) ;
-string_lit      ::= "\"" { string_char } "\"" ;
-string_char     ::= escape | any_char_except("\"", "\\", newline) ;
-escape          ::= "\\" ( "n" | "t" | "r" | "\\" | "'" | "\"" | any_char ) ;
-literal         ::= int_lit | float_lit | bool_lit | char_lit | string_lit ;
+IDENT         ::= ident_start ident_cont*
+
+INTLIT        ::= digit+
+HEXLIT        ::= "0x" hex_digit+ | "0X" hex_digit+
+FLOATLIT      ::= digit+ "." digit+ ( ("e" | "E") ("+" | "-")? digit+ )?
+                | digit+ ("e" | "E") ("+" | "-")? digit+
+STRINGLIT     ::= '"' ( escape | ~["\\] )* '"'
+CHARLIT       ::= "'" ( escape | ~['\\\n\r] ) "'"
+BOOLLIT       ::= "true" | "false"
+
+escape        ::= "\\" ( '"' | "\\" | "n" | "t" | "r" | "0"
+                       | ("u" hex hex hex hex)
+                       | ("U" hex hex hex hex hex hex hex hex) )
+hex_digit     ::= "0"… "9" | "a"… "f" | "A"… "F"
+
+LINE_COMMENT  ::= "//" [^\n]*
+BLOCK_COMMENT ::= "/*" .*? "*/"
+
+WS            ::= (" " | "\t" | "\r" | "\n" | "\v" | "\f")+
+
+(* Keywords *)
+Keyword       ::= "fn" | "return" | "if" | "else" | "for" | "while" 
+                | "break" | "continue" | "switch" | "case" | "default" 
+                | "do" | "const" | "let" | "var"
+                | "int" | "float" | "double" | "bool" | "string" 
+                | "char" | "void" | "long" | "short"
+
+(* Operators & Punctuation *)
+Punctuator    ::= "(" | ")" | "{" | "}" | "[" | "]" | ";" | "," | ":" | "."
+                | "+" | "-" | "*" | "/" | "%"
+                | "=" | "+=" | "-=" | "*=" | "/=" | "%="
+                | "==" | "!=" | "<" | "<=" | ">" | ">="
+                | "&&" | "||" | "!" | "~" | "&" | "|" | "^" | "<<" | ">>"
+                | "?" 
+
+(* ======================== *)
+(* 2. Program Structure     *)
+(* ======================== *)
+
+Program       ::= (TopDecl | ";")* EOF
+
+TopDecl       ::= FuncDecl "."
+                | VarDecl  "."
+
+(* ======================== *)
+(* 3. Declarations          *)
+(* ======================== *)
+
+FuncDecl      ::= "fn" Type IDENT "(" ParamList? ")" Block
+ParamList     ::= Param ( "," Param )*
+Param         ::= Type IDENT
+
+VarDecl       ::= Type IDENT ( "=" Expr )?
+Type          ::= "int" | "float" | "double" | "bool" | "string" | "char"
+                | "void" | "long" | "short"
+
+(* ======================== *)
+(* 4. Statements            *)
+(* ======================== *)
+
+Stmt          ::= Block
+                | IfStmt
+                | WhileStmt
+                | ForStmt
+                | ReturnStmt
+                | BreakStmt
+                | ContinueStmt
+                | LocalVarDeclStmt
+                | ExprStmt
+
+Block         ::= "{" Stmt* "}"
+
+IfStmt        ::= "if" "(" Expr ")" Stmt ( "else" Stmt )?
+
+WhileStmt     ::= "while" "(" Expr ")" Stmt
+
+ForStmt       ::= "for" "(" ForInit? ";" ForCond? ";" ForUpdate? ")" Stmt
+ForInit       ::= LocalVarDecl | Expr
+ForCond       ::= Expr
+ForUpdate     ::= Expr
+
+ReturnStmt    ::= "return" Expr? ";"
+BreakStmt     ::= "break" ";"
+ContinueStmt  ::= "continue" ";"
+
+LocalVarDeclStmt ::= LocalVarDecl ";"
+LocalVarDecl  ::= Type IDENT ( "=" Expr )?
+
+ExprStmt      ::= Expr ";"
+
+(* ======================== *)
+(* 5. Expressions           *)
+(* ======================== *)
+
+Expr          ::= Assign
+Assign        ::= Or ( AssignOp Assign )?
+AssignOp      ::= "=" | "+=" | "-=" | "*=" | "/=" | "%="
+
+Or            ::= And ( "||" And )*
+And           ::= Eq  ( "&&" Eq )*
+Eq            ::= Rel ( ("==" | "!=") Rel )*
+Rel           ::= Add ( ("<" | ">" | "<=" | ">=") Add )*
+Add           ::= Mul ( ("+" | "-") Mul )*
+Mul           ::= Unary ( ("*" | "/" | "%") Unary )*
+
+Unary         ::= ("+" | "-" | "!") Unary
+                | Postfix
+
+Postfix       ::= Primary ( CallArgs | Index )*
+CallArgs      ::= "(" ArgList? ")"
+ArgList       ::= Expr ( "," Expr )*
+Index         ::= "[" Expr "]"
+
+Primary       ::= INTLIT | HEXLIT | FLOATLIT | STRINGLIT 
+                | CHARLIT | BOOLLIT | IDENT 
+                | "(" Expr ")"
