@@ -10,8 +10,8 @@ The aim is to explore compiler design concepts such as **lexical analysis**, **p
 ```text
 Cpp-Compiler-From-Scratch/
 ├── .gitignore
-├── Old_Compiler.cpp                          
-├── Updated_Compiler.cpp          # Core compiler/lexer work-in-progress
+├── Updated_Compiler.cpp                          
+├── parser.cpp          # Core compiler/parser work-in-progress
 └── README.md
 ```
 
@@ -37,7 +37,7 @@ g++ -std=c++17 -O2 -o compiler Updated_Compiler.cpp
 **Windows (MinGW):**
 
 ```bash
-g++ -o Updated_Compiler.cpp compiler.exe
+g++ -o parser.cpp compiler.exe
 ```
 
 ### 3) Run
