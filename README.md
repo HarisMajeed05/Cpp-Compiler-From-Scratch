@@ -1,7 +1,7 @@
 # Cpp-Compiler-From-Scratch
 
 A toy C++ compiler implemented in C++, built from scratch for learning purposes.  
-The aim is to explore compiler design concepts such as **lexical analysis**, **parsing**, simple **semantic checks**, and (eventually) **code generation**.
+The aim is to explore compiler design concepts such as **lexical analysis**, **parsing** (using Top-to-bottom Recursive descent parsing), simple **semantic checks**, and (eventually) **code generation**.
 
 ---
 
@@ -31,19 +31,19 @@ cd Cpp-Compiler-From-Scratch
 **Linux / macOS (g++ or clang++):**
 
 ```bash
-g++ -std=c++17 -O2 -o compiler parser.cpp
+g++ -std=c++17 -O2 -o parser parser.cpp
 ```
 
 **Windows (MinGW):**
 
 ```bash
-g++ -o parser.cpp compiler.exe
+g++ parser.cpp -o parser.exe
 ```
 
 ### 3) Run
 
 ```bash
-./compiler
+./parser
 ```
 
 ---
