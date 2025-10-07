@@ -1,8 +1,11 @@
 // Tiny C++-subset Lexer(s) + Recursive-Descent Parser (choice: manual or regex)
 // Prints the token list (with lexeme and int value) and then the AST.
+// Now: comments produce T_COMMENT tokens and are printed, but are ignored by the parser.
+// Also: #include / #... lines tokenized as T_INCLUDE / T_PPDIRECTIVE;
+//       `using namespace <id>;` accepted at the top level.
 //
 // Compile:
-//   g++ parser.cpp -o parser
+//   g++ -std=c++17 -O2 -Wall -Wextra parser.cpp -o parser
 //
 // Scope (C++ subset):
 //   - Types: int, float, bool, char, string, void
@@ -13,6 +16,8 @@
 //   - Literals: int, float, string "..." (escapes), true/false, char 'a'
 //   - Identifiers: ASCII [A-Za-z_][A-Za-z0-9_]*
 //   - Comments: // line, /* block */
+//   - Preprocessor: #include <...> / "..." (T_INCLUDE) and generic #... (T_PPDIRECTIVE)
+//   - Using-directive: using namespace IDENT ;
 
 #include <iostream>
 #include <string>
@@ -28,29 +33,23 @@
 
 using namespace std;
 
-// ------------------------------ utility ------------------------------
-
 static int stringHash(const string &str)
 {
-    // simple 31-based hash into int (same as your earlier code pattern)
     long long h = 0;
     for (unsigned char c : str)
         h = (h * 31 + c) & 0x7fffffff;
     return static_cast<int>(h);
 }
 
-// ------------------------------ Tokens ------------------------------
-
 struct Token
 {
     string type;
     int value = 0;
-    string lexeme; // original text / unescaped content for strings/chars
+    string lexeme; // original text / unescaped content
     int line = 1;
     int col = 1;
 };
 
-// pretty-print tokens (now shows both lexeme + value)
 static string escapeLexeme(const string &s)
 {
     string out;
@@ -84,10 +83,13 @@ static string escapeLexeme(const string &s)
 
 static string showToken(const Token &t)
 {
-    // readable + include numeric value
     if (t.lexeme.empty())
         return t.type + "(v=" + to_string(t.value) + ")";
-    if (t.type == "T_IDENTIFIER" || t.type == "T_STRINGLIT" || t.type == "T_CHARLIT" || t.type == "T_BOOLLIT")
+    // payload-in-quotes kinds:
+    if (t.type == "T_IDENTIFIER" || t.type == "T_STRINGLIT" ||
+        t.type == "T_CHARLIT" || t.type == "T_BOOLLIT" ||
+        t.type == "T_COMMENT" || t.type == "T_INCLUDE" ||
+        t.type == "T_PPDIRECTIVE")
     {
         return t.type + "(\"" + escapeLexeme(t.lexeme) + "\", v=" + to_string(t.value) + ")";
     }
@@ -99,17 +101,14 @@ struct LexError : runtime_error
     using runtime_error::runtime_error;
 };
 
-// Common keyword/operator tables (C++-subset)
 static const unordered_map<string, string> KEYWORDS = {
-    {"int", "T_INT"}, {"float", "T_FLOAT"}, {"bool", "T_BOOL"}, {"char", "T_CHAR"}, {"string", "T_STRING"}, {"void", "T_VOID"}, {"if", "T_IF"}, {"else", "T_ELSE"}, {"while", "T_WHILE"}, {"for", "T_FOR"}, {"return", "T_RETURN"}, {"true", "T_BOOLLIT"}, {"false", "T_BOOLLIT"}};
+    {"int", "T_INT"}, {"float", "T_FLOAT"}, {"bool", "T_BOOL"}, {"char", "T_CHAR"}, {"string", "T_STRING"}, {"void", "T_VOID"}, {"if", "T_IF"}, {"else", "T_ELSE"}, {"while", "T_WHILE"}, {"for", "T_FOR"}, {"return", "T_RETURN"}, {"true", "T_BOOLLIT"}, {"false", "T_BOOLLIT"}, {"using", "T_USING"}, {"namespace", "T_NAMESPACE"}};
 
 static const vector<pair<string, string>> MULTI_OPS = {
     {"==", "T_EQUALSOP"}, {"!=", "T_NEQ"}, {"<=", "T_LTE"}, {">=", "T_GTE"}, {"&&", "T_ANDAND"}, {"||", "T_OROR"}, {"<<", "T_SHL"}, {">>", "T_SHR"}, {"+=", "T_PLUSEQ"}, {"-=", "T_MINUSEQ"}, {"*=", "T_MULEQ"}, {"/=", "T_DIVEQ"}, {"%=", "T_MODEQ"}, {"&=", "T_ANDEQ"}, {"|=", "T_OREQ"}, {"^=", "T_XOREQ"}, {"++", "T_INC"}, {"--", "T_DEC"}, {"->", "T_ARROW"}};
 
 static const unordered_map<char, string> SINGLE = {
     {'(', "T_PARENL"}, {')', "T_PARENR"}, {'{', "T_BRACEL"}, {'}', "T_BRACER"}, {'[', "T_BRACKETL"}, {']', "T_BRACKETR"}, {';', "T_SEMICOLON"}, {',', "T_COMMA"}, {':', "T_COLON"}, {'.', "T_DOT"}, {'+', "T_PLUS"}, {'-', "T_MINUS"}, {'*', "T_STAR"}, {'/', "T_SLASH"}, {'%', "T_PERCENT"}, {'<', "T_LT"}, {'>', "T_GT"}, {'=', "T_ASSIGNOP"}, {'!', "T_BANG"}, {'&', "T_AMP"}, {'|', "T_PIPE"}, {'^', "T_CARET"}, {'~', "T_TILDE"}, {'?', "T_QUESTION"}, {'\'', "T_SQUOTE"}, {'\"', "T_DQUOTE"}};
-
-// ------------------------------ Lexer 1 (manual) ------------------------------
 
 struct Lexer1
 {
@@ -154,7 +153,7 @@ struct Lexer1
     static bool isIdentStart(char c) { return std::isalpha((unsigned char)c) || c == '_'; }
     static bool isIdentCont(char c) { return std::isalnum((unsigned char)c) || c == '_'; }
 
-    void skipWSandComments()
+    void skipWS()
     {
         while (true)
         {
@@ -164,31 +163,120 @@ struct Lexer1
                 adv();
                 continue;
             }
-            if (c == '/' && peek(1) == '/')
+            break;
+        }
+    }
+
+    Token lineComment()
+    {
+        int L = line, C = col;
+        adv();
+        adv(); // //
+        string buf;
+        while (peek() != '\n' && peek() != '\0')
+        {
+            buf.push_back(peek());
+            adv();
+        }
+        return Token{"T_COMMENT", stringHash(buf), buf, L, C};
+    }
+
+    Token blockComment()
+    {
+        int L = line, C = col;
+        adv();
+        adv(); // /*
+        string buf;
+        while (true)
+        {
+            char c = peek();
+            if (c == '\0')
+                err("Unterminated block comment");
+            if (c == '*' && peek(1) == '/')
             {
-                while (peek() != '\n' && peek() != '\0')
-                    adv();
-                continue;
+                adv();
+                adv();
+                break;
             }
-            if (c == '/' && peek(1) == '*')
+            buf.push_back(c);
+            adv();
+        }
+        return Token{"T_COMMENT", stringHash(buf), buf, L, C};
+    }
+
+    // #include and generic #...
+    Token preproc()
+    {
+        int L = line, C = col;
+        // consume '#'
+        adv();
+        // read the directive name
+        while (peek() == ' ' || peek() == '\t')
+            adv();
+        string name;
+        while (isIdentCont(peek()))
+        {
+            name.push_back(peek());
+            adv();
+        }
+
+        // Only capture the rest of the line for simplicity
+        while (peek() == ' ' || peek() == '\t')
+            adv();
+
+        if (name == "include")
+        {
+            string header;
+            if (peek() == '<')
             {
-                adv();
-                adv();
-                while (true)
+                adv(); // <
+                while (peek() != '>' && peek() != '\0' && peek() != '\n')
                 {
-                    if (peek() == '\0')
-                        err("Unterminated block comment");
-                    if (peek() == '*' && peek(1) == '/')
-                    {
-                        adv();
-                        adv();
-                        break;
-                    }
+                    header.push_back(peek());
                     adv();
                 }
-                continue;
+                if (peek() != '>')
+                    err("Unterminated #include <...>");
+                adv(); // >
             }
-            break;
+            else if (peek() == '\"')
+            {
+                adv(); // "
+                while (peek() != '\"' && peek() != '\0' && peek() != '\n')
+                {
+                    header.push_back(peek());
+                    adv();
+                }
+                if (peek() != '\"')
+                    err("Unterminated #include \"...\"");
+                adv(); // "
+            }
+            else
+            {
+                // Fallback: grab to end-of-line
+                while (peek() != '\n' && peek() != '\0')
+                {
+                    header.push_back(peek());
+                    adv();
+                }
+            }
+            // eat rest-of-line newline if present
+            if (peek() == '\n')
+                adv();
+            return Token{"T_INCLUDE", stringHash(header), header, L, C};
+        }
+        else
+        {
+            string rest;
+            while (peek() != '\n' && peek() != '\0')
+            {
+                rest.push_back(peek());
+                adv();
+            }
+            if (peek() == '\n')
+                adv();
+            string lex = name + " " + rest;
+            return Token{"T_PPDIRECTIVE", stringHash(lex), lex, L, C};
         }
     }
 
@@ -200,7 +288,6 @@ struct Lexer1
 
         while (isdigit((unsigned char)peek()))
             adv();
-
         if (peek() == '.' && isdigit((unsigned char)peek(1)))
         {
             isFloat = true;
@@ -223,28 +310,19 @@ struct Lexer1
                     adv();
             }
         }
-
         string lex = s.substr(start, i - start);
-        int val = 0;
         if (isFloat)
+            return Token{"T_FLOATLIT", stringHash(lex), lex, L, C};
+        int val = 0;
+        try
         {
-            // store hash since Token::value is int
-            val = stringHash(lex);
-            return Token{"T_FLOATLIT", val, lex, L, C};
+            val = stoi(lex);
         }
-        else
+        catch (...)
         {
-            // decimal int
-            try
-            {
-                val = stoi(lex);
-            }
-            catch (...)
-            {
-                err("Integer out of range");
-            }
-            return Token{"T_INTLIT", val, lex, L, C};
+            err("Integer out of range");
         }
+        return Token{"T_INTLIT", val, lex, L, C};
     }
 
     Token identOrKeyword()
@@ -257,18 +335,13 @@ struct Lexer1
         while (isIdentCont(peek()))
             adv();
         string lex = s.substr(start, i - start);
-
         auto it = KEYWORDS.find(lex);
         if (it != KEYWORDS.end())
         {
             if (it->second == "T_BOOLLIT")
-            {
-                int v = (lex == "true") ? 1 : 0;
-                return Token{"T_BOOLLIT", v, lex, L, C};
-            }
+                return Token{"T_BOOLLIT", (lex == "true") ? 1 : 0, lex, L, C};
             return Token{it->second, 0, lex, L, C};
         }
-        // identifier: store a hash in value
         return Token{"T_IDENTIFIER", stringHash(lex), lex, L, C};
     }
 
@@ -328,11 +401,7 @@ struct Lexer1
             }
         }
         if (quote == '\"')
-        {
-            // string value -> hash in Token::value (keep text in lexeme)
             return Token{"T_STRINGLIT", stringHash(buf), buf, L, C};
-        }
-        // char: store code (ASCII)
         int v = !buf.empty() ? static_cast<unsigned char>(buf[0]) : 0;
         return Token{"T_CHARLIT", v, buf, L, C};
     }
@@ -342,10 +411,29 @@ struct Lexer1
         vector<Token> out;
         while (true)
         {
-            skipWSandComments();
+            skipWS();
             char c = peek();
             if (c == '\0')
                 break;
+
+            // Preprocessor lines
+            if (c == '#')
+            {
+                out.push_back(preproc());
+                continue;
+            }
+
+            // Comments (produce tokens)
+            if (c == '/' && peek(1) == '/')
+            {
+                out.push_back(lineComment());
+                continue;
+            }
+            if (c == '/' && peek(1) == '*')
+            {
+                out.push_back(blockComment());
+                continue;
+            }
 
             if (c == '\"' || c == '\'')
             {
@@ -393,8 +481,6 @@ struct Lexer1
     }
 };
 
-// ------------------------------ Lexer 2 (regex) ------------------------------
-
 struct Lexer2
 {
     string s;
@@ -409,15 +495,19 @@ struct Lexer2
     };
     vector<Rule> rules = {
         {"WS", regex(R"(^[ \t\r\n\v\f]+)"), true},
-        {"LCOM", regex(R"(^//[^\n]*)"), false},
-        {"BCOM", regex(R"(^/\[\s\S]?\*/)"), false},
-        {"STR", regex(R"(^"(?:\\["'\\ntr]|\\.|[^"\\])*")"), false},
-        {"CHR", regex(R"(^'(?:\\['"\\ntr]|\\.|[^'\\])')"), false},
-        {"HEX", regex(R"(^0[xX][0-9A-Fa-f]+(?![A-Za-z0-9_]))"), false},
-        {"DEC", regex(R"(^[0-9]+(?:\.[0-9]+)?(?:[eE][+\-]?[0-9]+)?(?![A-Za-z0-9_]))"), false},
-        {"ID", regex(R"(^[A-Za-z_][A-Za-z0-9_]*)"), false},
-        {"OP2", regex(R"(^(==|!=|<=|>=|&&|\|\||<<|>>|\+\+|--|->|\+=|-=|\*=|/=|%=|&=|\|=|\^=))"), false},
-        {"OP1", regex(R"(^[()\{\}\[\];,:\.\+\-\*\/%<>=!&\|\^\~\?\'\"])"), false}};
+        // Preprocessor (#include <...> or "...") and generic #...
+        {"INCA", regex(R"(^\#\s*include\s*<[^>\n]+>)")}, // angle
+        {"INCS", regex(R"(^\#\s*include\s*"[^"\n]+")")}, // quoted
+        {"PP", regex(R"(^\#[^\n]*)")},                   // any other preprocessor line
+        {"LCOM", regex(R"(^//[^\n]*)")},
+        {"BCOM", regex(R"(^/\*([^*]|\*+[^*/])*\*/)")},
+        {"STR", regex(R"(^"(?:\\["'\\ntr]|\\.|[^"\\])*")")},
+        {"CHR", regex(R"(^'(?:\\['"\\ntr]|\\.|[^'\\])')")},
+        {"HEX", regex(R"(^0[xX][0-9A-Fa-f]+(?![A-Za-z0-9_]))")},
+        {"DEC", regex(R"(^[0-9]+(?:\.[0-9]+)?(?:[eE][+\-]?[0-9]+)?(?![A-Za-z0-9_]))")},
+        {"ID", regex(R"(^[A-Za-z_][A-Za-z0-9_]*)")},
+        {"OP2", regex(R"(^(==|!=|<=|>=|&&|\|\||<<|>>|\+\+|--|->|\+=|-=|\*=|/=|%=|&=|\|=|\^=))")},
+        {"OP1", regex(R"(^[()\{\}\[\];,:\.\+\-\*\/%<>=!&\|\^\~\?\'\"])")}};
 
     static void advPos(const string &lex, int &line, int &col)
     {
@@ -454,6 +544,7 @@ struct Lexer2
             {
                 std::match_results<std::string::const_iterator> m;
                 if (std::regex_search(rem, m, rule.re, std::regex_constants::match_continuous))
+
                 {
                     string lex = m.str();
                     int L = line, C = col;
@@ -466,14 +557,34 @@ struct Lexer2
                         break;
                     }
 
-                    if (rule.name == "LCOM" || rule.name == "BCOM")
+                    if (rule.name == "INCA" || rule.name == "INCS")
                     {
-                        // ignore comments
+                        // Extract header name without delimiters
+                        string inner = lex;
+                        size_t lt = inner.find('<'), gt = inner.rfind('>');
+                        if (lt != string::npos && gt != string::npos && gt > lt)
+                            inner = inner.substr(lt + 1, gt - lt - 1);
+                        else
+                        {
+                            size_t q1 = lex.find('"'), q2 = lex.rfind('"');
+                            if (q1 != string::npos && q2 != string::npos && q2 > q1)
+                                inner = lex.substr(q1 + 1, q2 - q1 - 1);
+                        }
+                        out.push_back(Token{"T_INCLUDE", stringHash(inner), inner, L, C});
+                    }
+                    else if (rule.name == "PP")
+                    {
+                        string inner = lex.substr(1); // after '#'
+                        out.push_back(Token{"T_PPDIRECTIVE", stringHash(inner), inner, L, C});
+                    }
+                    else if (rule.name == "LCOM" || rule.name == "BCOM")
+                    {
+                        string inner = (rule.name == "LCOM") ? lex.substr(2) : lex.substr(2, lex.size() - 4);
+                        out.push_back(Token{"T_COMMENT", stringHash(inner), inner, L, C});
                     }
                     else if (rule.name == "STR")
                     {
-                        string inside = lex.substr(1, lex.size() - 2);
-                        string un;
+                        string inside = lex.substr(1, lex.size() - 2), un;
                         un.reserve(inside.size());
                         for (size_t k = 0; k < inside.size();)
                         {
@@ -515,13 +626,12 @@ struct Lexer2
                     }
                     else if (rule.name == "CHR")
                     {
-                        string inside = lex.substr(1, lex.size() - 2);
-                        string un;
+                        string inside = lex.substr(1, lex.size() - 2), un;
                         if (inside.size() == 1 && inside[0] != '\\')
                             un.push_back(inside[0]);
                         else if (!inside.empty() && inside[0] == '\\')
                         {
-                            char e = inside.size() > 1 ? inside[1] : '\0';
+                            char e = (inside.size() > 1 ? inside[1] : '\0');
                             switch (e)
                             {
                             case 'n':
@@ -552,7 +662,6 @@ struct Lexer2
                     }
                     else if (rule.name == "HEX")
                     {
-                        // hex integer -> int
                         long long v = 0;
                         for (size_t j = 2; j < lex.size(); ++j)
                         {
@@ -571,9 +680,7 @@ struct Lexer2
                     {
                         bool isFloat = (lex.find('.') != string::npos) || (lex.find('e') != string::npos) || (lex.find('E') != string::npos);
                         if (isFloat)
-                        {
                             out.push_back(Token{"T_FLOATLIT", stringHash(lex), lex, L, C});
-                        }
                         else
                         {
                             int v = 0;
@@ -594,19 +701,12 @@ struct Lexer2
                         if (it != KEYWORDS.end())
                         {
                             if (it->second == "T_BOOLLIT")
-                            {
-                                int v = (lex == "true") ? 1 : 0;
-                                out.push_back(Token{"T_BOOLLIT", v, lex, L, C});
-                            }
+                                out.push_back(Token{"T_BOOLLIT", (lex == "true") ? 1 : 0, lex, L, C});
                             else
-                            {
                                 out.push_back(Token{it->second, 0, lex, L, C});
-                            }
                         }
                         else
-                        {
                             out.push_back(Token{"T_IDENTIFIER", stringHash(lex), lex, L, C});
-                        }
                     }
                     else if (rule.name == "OP2")
                     {
@@ -626,9 +726,7 @@ struct Lexer2
                         out.push_back(Token{it->second, 0, string(1, c), L, C});
                     }
                     else
-                    {
                         err("Unhandled rule");
-                    }
 
                     advPos(lex, line, col);
                     i += lex.size();
@@ -648,7 +746,6 @@ struct Lexer2
         return out;
     }
 };
-// ------------------------------ AST ------------------------------
 
 struct Expr;
 struct Stmt;
@@ -662,7 +759,7 @@ struct Expr
     string kind;    // "Literal", "Identifier", "Unary", "Binary", "Call", "Index", "Grouping"
     string op;      // for unary/binary
     string litType; // T_INTLIT/T_FLOATLIT/T_STRINGLIT/T_BOOLLIT/T_CHARLIT
-    string value;   // keep text for printing; you can add an int field later if desired
+    string value;   // keep text for printing
     vector<ExprPtr> args;
 };
 
@@ -857,7 +954,6 @@ static void printStmt(const StmtPtr &s, int ind = 0)
         pad(ind);
         cout << "]\n";
     }
-
     else if (s->kind == "Block")
     {
         pad(ind);
@@ -873,8 +969,6 @@ static void printStmt(const StmtPtr &s, int ind = 0)
         cout << "<?> stmt\n";
     }
 }
-
-
 
 static void printDecl(const DeclPtr &d, int ind = 0)
 {
@@ -927,7 +1021,6 @@ struct Parser
 {
     vector<Token> ts;
     size_t i = 0;
-
     Parser() = default;
     explicit Parser(vector<Token> toks) : ts(move(toks)) {}
 
@@ -964,17 +1057,46 @@ struct Parser
         return types.count(t.type) > 0;
     }
 
+    // Skip tokens that should be ignored at the top-level (includes, generic pp, comments)
+    bool skipTopNoise()
+    {
+        bool any = false;
+        while (true)
+        {
+            if (match("T_INCLUDE") || match("T_PPDIRECTIVE") || match("T_COMMENT"))
+            {
+                any = true;
+                continue;
+            }
+
+            // using namespace IDENT ;
+            if (peek().type == "T_USING" && peek(1).type == "T_NAMESPACE")
+            {
+                i += 2; // consume using namespace
+                if (peek().type != "T_IDENTIFIER")
+                    throw ParseError("Expected identifier after 'using namespace' " + toLoc(peek()));
+                ++i; // ident
+                expect("T_SEMICOLON", "Expected ';' after using-directive");
+                any = true;
+                continue;
+            }
+            break;
+        }
+        return any;
+    }
+
     vector<DeclPtr> parseProgram()
     {
         vector<DeclPtr> out;
         while (peek().type != "T_EOF")
         {
+            if (skipTopNoise())
+                continue;
+
             if (isTypeTok(peek()))
             {
                 if (peek(1).type == "T_IDENTIFIER" && peek(2).type == "T_PARENL")
-                {
                     out.push_back(parseFunc());
-                }
                 else
                 {
                     out.push_back(parseTopVarDecl());
@@ -982,9 +1104,7 @@ struct Parser
                 }
             }
             else
-            {
                 throw ParseError(string("Expected declaration at ") + toLoc(peek()));
-            }
         }
         return out;
     }
@@ -1043,7 +1163,12 @@ struct Parser
         expect("T_BRACEL", "Expected '{'");
         vector<StmtPtr> out;
         while (peek().type != "T_BRACER")
+        {
+            // allow comments or preprocessor lines inside blocks, just skip them
+            if (match("T_COMMENT") || match("T_PPDIRECTIVE") || match("T_INCLUDE"))
+                continue;
             out.push_back(parseStmt());
+        }
         expect("T_BRACER", "Expected '}'");
         return out;
     }
@@ -1058,7 +1183,6 @@ struct Parser
             return s;
         }
 
-
         if (peek().type == "T_IF")
         {
             i++;
@@ -1070,19 +1194,12 @@ struct Parser
             if (match("T_ELSE"))
             {
                 auto e = parseStmt();
-                if (e->kind == "Block")
-                    elseBlk = e->block;
-                else
-                    elseBlk = {e};
+                elseBlk = (e->kind == "Block") ? e->block : vector<StmtPtr>{e};
             }
-
             auto s = make_shared<Stmt>();
             s->kind = "If";
             s->ifCond = cond;
-            if (thenS->kind == "Block")
-                s->ifBlock = thenS->block;
-            else
-                s->ifBlock = {thenS};
+            s->ifBlock = (thenS->kind == "Block") ? thenS->block : vector<StmtPtr>{thenS};
             s->elseBlock = move(elseBlk);
             return s;
         }
@@ -1097,10 +1214,7 @@ struct Parser
             auto s = make_shared<Stmt>();
             s->kind = "While";
             s->whileCond = cond;
-            if (body->kind == "Block")
-                s->whileBlock = body->block;
-            else
-                s->whileBlock = {body};
+            s->whileBlock = (body->kind == "Block") ? body->block : vector<StmtPtr>{body};
             return s;
         }
 
@@ -1135,10 +1249,7 @@ struct Parser
                 s->forUpdt = parseExpr();
             expect("T_PARENR", "Expected ')'");
             auto body = parseStmt();
-            if (body->kind == "Block")
-                s->forBlock = body->block;
-            else
-                s->forBlock = {body};
+            s->forBlock = (body->kind == "Block") ? body->block : vector<StmtPtr>{body};
             return s;
         }
 
@@ -1187,7 +1298,6 @@ struct Parser
         return s;
     }
 
-
     // Expressions (precedence climbing)
     ExprPtr parseExpr() { return parseAssign(); }
     ExprPtr parseAssign()
@@ -1205,9 +1315,6 @@ struct Parser
         }
         return lhs;
     }
-
-
-
     ExprPtr parseOr()
     {
         auto e = parseAnd();
@@ -1238,7 +1345,6 @@ struct Parser
         }
         return e;
     }
-
     ExprPtr parseEq()
     {
         auto e = parseRel();
@@ -1255,8 +1361,6 @@ struct Parser
         }
         return e;
     }
-
-
     ExprPtr parseRel()
     {
         auto e = parseAdd();
@@ -1273,7 +1377,6 @@ struct Parser
         }
         return e;
     }
-
     ExprPtr parseAdd()
     {
         auto e = parseMul();
@@ -1290,7 +1393,6 @@ struct Parser
         }
         return e;
     }
-
     ExprPtr parseMul()
     {
         auto e = parseUnary();
@@ -1428,27 +1530,30 @@ struct Parser
         throw ParseError(string("Expected expression at ") + toLoc(t));
     }
 };
-// ----------------------------- Demo main ------------------------------
+static const string SAMPLE_CPP1 = R"(
+int h=a+100-20/b*3;
+)";
 static const string SAMPLE_CPP = R"(
 
-int add(int x, int y) { 
-    return x + y;
-}
-int mainFn() {
-    int a = 3;
-    int b = 6;
-    int f = 1;
-    int z = 2;
+int main() {
+
     int h = 6 * f + 3 * 2 - b * b * z * z;
     int c = 10 - (-b * 10 + 12) + (5 - 10);
+
+    parse_var_decl
+    var_asn
+    add
+    mul 
+
     // control flow
     if (a == 3) { a = a + 1; } else { a = a - 1; }
-    while (a < 10) { a = a + 1; }
+    
 
     for (int i = 0; i < 5; i = i + 1) { b = b + i; }
 
     return add(a, b);
 }
+// trailing comment
 )";
 
 static void printTokens(const vector<Token> &toks)
@@ -1466,6 +1571,7 @@ static void printTokens(const vector<Token> &toks)
     }
     cout << "]\n";
 }
+
 int main()
 {
     cout << "Run which lexer?\n1) manual (ASCII, C++ subset)\n2) regex (C++ subset)\n> ";
@@ -1475,6 +1581,7 @@ int main()
         cerr << "Invalid input\n";
         return 1;
     }
+
     string input = SAMPLE_CPP;
     try
     {
@@ -1494,10 +1601,14 @@ int main()
             cerr << "Please enter 1 or 2\n";
             return 1;
         }
-        // print tokens first (now includes int value)
+
+        // Show all tokens (includes T_INCLUDE, T_PPDIRECTIVE, T_COMMENT)
         printTokens(toks);
+
+        // Parse directly; the parser will skip includes/pp/comments and 'using namespace'
         Parser p{toks};
         auto decls = p.parseProgram();
+
         cout << "AST:\n[\n";
         for (auto &d : decls)
             printDecl(d, 2);

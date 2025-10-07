@@ -40,6 +40,7 @@ BLOCK_COMMENT ::= "/*" .*? "*/"
 WS            ::= (" " | "\t" | "\r" | "\n" | "\v" | "\f")+
 
 (* Keywords *)
+
 Keyword       ::= "fn" | "return" | "if" | "else" | "for" | "while" 
                 | "break" | "continue" | "switch" | "case" | "default" 
                 | "do" | "const" | "let" | "var"
