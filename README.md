@@ -12,6 +12,7 @@ Cpp-Compiler-From-Scratch/
 ├── .gitignore
 ├── lexer.cpp               # Core Lexer                      
 ├── parser.cpp              # Core parser work-in-progress
+├── grammar.md              # Defines the grammar of the parser
 └── README.md
 ```
 
