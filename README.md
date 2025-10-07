@@ -10,7 +10,7 @@ The aim is to explore compiler design concepts such as **lexical analysis**, **p
 ```text
 Cpp-Compiler-From-Scratch/
 ├── .gitignore
-├── Updated_Compiler.cpp    # Core Lexer                      
+├── lexer.cpp               # Core Lexer                      
 ├── parser.cpp              # Core parser work-in-progress
 └── README.md
 ```
