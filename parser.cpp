@@ -1534,16 +1534,11 @@ static const string SAMPLE_CPP1 = R"(
 int h=a+100-20/b*3;
 )";
 static const string SAMPLE_CPP = R"(
-
+#include <iostream>
 int main() {
 
     int h = 6 * f + 3 * 2 - b * b * z * z;
     int c = 10 - (-b * 10 + 12) + (5 - 10);
-
-    parse_var_decl
-    var_asn
-    add
-    mul 
 
     // control flow
     if (a == 3) { a = a + 1; } else { a = a - 1; }
