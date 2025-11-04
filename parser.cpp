@@ -1536,7 +1536,10 @@ int h=a+100-20/b*3;
 static const string SAMPLE_CPP = R"(
 #include <iostream>
 int main() {
-
+    int f=5;
+    int b=10;
+    int z=2;
+    int a = 3;
     int h = 6 * f + 3 * 2 - b * b * z * z;
     int c = 10 - (-b * 10 + 12) + (5 - 10);
 
@@ -1566,6 +1569,162 @@ static void printTokens(const vector<Token> &toks)
     }
     cout << "]\n";
 }
+
+
+
+// Scope Analysis
+
+enum class ScopeError {
+    UndeclaredVariableAccessed,
+    UndefinedFunctionCalled,
+    VariableRedefinition,
+    FunctionPrototypeRedefinition
+};
+
+struct ScopeStack {
+    vector<unordered_map<string, string>> varScopes; 
+    unordered_map<string, string> functions;         
+
+    void enterScope() { varScopes.push_back({}); }
+    void exitScope()  { if (!varScopes.empty()) varScopes.pop_back(); }
+
+    bool addVar(const string &name, const string &type) {
+        if (varScopes.empty()) enterScope();
+        auto &top = varScopes.back();
+        if (top.count(name)) return false; // redefinition in same scope
+        top[name] = type;
+        return true;
+    }
+
+    bool varExists(const string &name) const {
+        for (auto it = varScopes.rbegin(); it != varScopes.rend(); ++it)
+            if (it->count(name)) return true;
+        return false;
+    }
+
+    void addFunc(const string &name, const string &retType) {
+        if (functions.count(name))
+            throw runtime_error("ScopeError: FunctionPrototypeRedefinition -> " + name);
+        functions[name] = retType;
+    }
+
+    bool funcExists(const string &name) const {
+        return functions.count(name);
+    }
+};
+
+struct ScopeAnalyzer {
+    ScopeStack scope;
+
+    void analyzeProgram(const vector<DeclPtr> &decls) {
+        scope.enterScope(); // global
+        for (auto &d : decls)
+            analyzeDecl(d);
+        scope.exitScope();
+    }
+
+    void analyzeDecl(const DeclPtr &d) {
+        if (d->kind == "VarDecl") {
+            if (!scope.addVar(d->varName, d->varType))
+                throw runtime_error("ScopeError: VariableRedefinition -> " + d->varName);
+            if (d->varInit) analyzeExpr(d->varInit);
+        } else if (d->kind == "FnDecl") {
+            if (scope.funcExists(d->fnName))
+                throw runtime_error("ScopeError: FunctionPrototypeRedefinition -> " + d->fnName);
+            scope.addFunc(d->fnName, d->retType);
+
+            scope.enterScope(); // function scope
+            for (auto &[ty, nm] : d->params) {
+                if (!scope.addVar(nm, ty))
+                    throw runtime_error("ScopeError: VariableRedefinition(param) -> " + nm);
+            }
+            for (auto &s : d->body)
+                analyzeStmt(s);
+            scope.exitScope();
+        }
+    }
+
+    void analyzeStmt(const StmtPtr &s) {
+        if (!s) return;
+        if (s->kind == "VarDecl") {
+            if (!scope.addVar(s->name, s->typeTok))
+                throw runtime_error("ScopeError: VariableRedefinition -> " + s->name);
+            if (s->init) analyzeExpr(s->init);
+        } else if (s->kind == "ExprStmt") {
+            analyzeExpr(s->expr);
+        } else if (s->kind == "Return") {
+            analyzeExpr(s->ret);
+        } else if (s->kind == "If") {
+            analyzeExpr(s->ifCond);
+            scope.enterScope();
+            for (auto &st : s->ifBlock) analyzeStmt(st);
+            scope.exitScope();
+            scope.enterScope();
+            for (auto &st : s->elseBlock) analyzeStmt(st);
+            scope.exitScope();
+        } else if (s->kind == "While") {
+            analyzeExpr(s->whileCond);
+            scope.enterScope();
+            for (auto &st : s->whileBlock) analyzeStmt(st);
+            scope.exitScope();
+        } else if (s->kind == "For") {
+            scope.enterScope();
+            if (s->hasInitDecl) {
+                if (!scope.addVar(s->forInitName, s->forInitType))
+                    throw runtime_error("ScopeError: VariableRedefinition(for) -> " + s->forInitName);
+                analyzeExpr(s->forInitExpr);
+            } else {
+                analyzeExpr(s->expr);
+            }
+            analyzeExpr(s->forCond);
+            analyzeExpr(s->forUpdt);
+            for (auto &st : s->forBlock) analyzeStmt(st);
+            scope.exitScope();
+        } else if (s->kind == "Block") {
+            scope.enterScope();
+            for (auto &st : s->block) analyzeStmt(st);
+            scope.exitScope();
+        }
+    }
+
+    void analyzeExpr(const ExprPtr &e) {
+        if (!e) return;
+        if (e->kind == "Identifier") {
+            if (!scope.varExists(e->value))
+                throw runtime_error("ScopeError: UndeclaredVariableAccessed -> " + e->value);
+        } else if (e->kind == "Call") {
+            if (!scope.funcExists(e->value))
+                throw runtime_error("ScopeError: UndefinedFunctionCalled -> " + e->value);
+            for (auto &a : e->args)
+                analyzeExpr(a);
+        } else if (e->kind == "Binary" || e->kind == "Unary" ||
+                   e->kind == "Grouping" || e->kind == "Index") {
+            for (auto &a : e->args)
+                analyzeExpr(a);
+        }
+    }
+};
+
+
+int runScopeAnalysis(const vector<DeclPtr> &decls) {
+    try {
+        ScopeAnalyzer analyzer;
+        analyzer.analyzeProgram(decls);
+        cout << "\nScope analysis: OK (no errors)\n";
+        return 0;
+    } catch (const runtime_error &e) {
+        cerr << e.what() << "\n";
+        return 1;
+    }
+}
+
+
+
+
+
+
+
+
 
 int main()
 {
@@ -1597,10 +1756,9 @@ int main()
             return 1;
         }
 
-        // Show all tokens (includes T_INCLUDE, T_PPDIRECTIVE, T_COMMENT)
+    
         printTokens(toks);
 
-        // Parse directly; the parser will skip includes/pp/comments and 'using namespace'
         Parser p{toks};
         auto decls = p.parseProgram();
 
@@ -1608,6 +1766,8 @@ int main()
         for (auto &d : decls)
             printDecl(d, 2);
         cout << "]\n";
+        
+        runScopeAnalysis(decls);
     }
     catch (const LexError &e)
     {
@@ -1621,3 +1781,15 @@ int main()
     }
     return 0;
 }
+
+
+
+
+
+
+
+
+
+
+
+
