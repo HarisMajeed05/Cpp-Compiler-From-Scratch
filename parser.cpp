@@ -102,10 +102,10 @@ struct LexError : runtime_error
 };
 
 static const unordered_map<string, string> KEYWORDS = {
-    {"int", "T_INT"}, {"float", "T_FLOAT"}, {"bool", "T_BOOL"}, {"char", "T_CHAR"}, {"string", "T_STRING"}, {"void", "T_VOID"}, {"if", "T_IF"}, {"else", "T_ELSE"}, {"while", "T_WHILE"}, {"for", "T_FOR"}, {"return", "T_RETURN"}, {"true", "T_BOOLLIT"}, {"false", "T_BOOLLIT"}, {"using", "T_USING"}, {"namespace", "T_NAMESPACE"}};
+    {"int", "T_INT"}, {"float", "T_FLOAT"}, {"bool", "T_BOOL"}, {"char", "T_CHAR"}, {"string", "T_STRING"}, {"void", "T_VOID"}, {"if", "T_IF"}, {"else", "T_ELSE"}, {"while", "T_WHILE"}, {"for", "T_FOR"}, {"return", "T_RETURN"}, {"true", "T_BOOLLIT"}, {"false", "T_BOOLLIT"}, {"using", "T_USING"}, {"namespace", "T_NAMESPACE"},{"break", "T_BREAK"}};
 
 static const vector<pair<string, string>> MULTI_OPS = {
-    {"==", "T_EQUALSOP"}, {"!=", "T_NEQ"}, {"<=", "T_LTE"}, {">=", "T_GTE"}, {"&&", "T_ANDAND"}, {"||", "T_OROR"}, {"<<", "T_SHL"}, {">>", "T_SHR"}, {"+=", "T_PLUSEQ"}, {"-=", "T_MINUSEQ"}, {"*=", "T_MULEQ"}, {"/=", "T_DIVEQ"}, {"%=", "T_MODEQ"}, {"&=", "T_ANDEQ"}, {"|=", "T_OREQ"}, {"^=", "T_XOREQ"}, {"++", "T_INC"}, {"--", "T_DEC"}, {"->", "T_ARROW"}};
+    {"==", "T_EQUALSOP"}, {"!=", "T_NEQ"}, {"<=", "T_LTE"}, {">=", "T_GTE"}, {"&&", "T_ANDAND"}, {"||", "T_OROR"}, {"<<", "T_SHL"}, {">>", "T_SHR"},{"**","T_POW"}, {"+=", "T_PLUSEQ"}, {"-=", "T_MINUSEQ"}, {"*=", "T_MULEQ"}, {"/=", "T_DIVEQ"}, {"%=", "T_MODEQ"}, {"&=", "T_ANDEQ"}, {"|=", "T_OREQ"}, {"^=", "T_XOREQ"}, {"++", "T_INC"}, {"--", "T_DEC"}, {"->", "T_ARROW"}};
 
 static const unordered_map<char, string> SINGLE = {
     {'(', "T_PARENL"}, {')', "T_PARENR"}, {'{', "T_BRACEL"}, {'}', "T_BRACER"}, {'[', "T_BRACKETL"}, {']', "T_BRACKETR"}, {';', "T_SEMICOLON"}, {',', "T_COMMA"}, {':', "T_COLON"}, {'.', "T_DOT"}, {'+', "T_PLUS"}, {'-', "T_MINUS"}, {'*', "T_STAR"}, {'/', "T_SLASH"}, {'%', "T_PERCENT"}, {'<', "T_LT"}, {'>', "T_GT"}, {'=', "T_ASSIGNOP"}, {'!', "T_BANG"}, {'&', "T_AMP"}, {'|', "T_PIPE"}, {'^', "T_CARET"}, {'~', "T_TILDE"}, {'?', "T_QUESTION"}, {'\'', "T_SQUOTE"}, {'\"', "T_DQUOTE"}};
@@ -506,7 +506,7 @@ struct Lexer2
         {"HEX", regex(R"(^0[xX][0-9A-Fa-f]+(?![A-Za-z0-9_]))")},
         {"DEC", regex(R"(^[0-9]+(?:\.[0-9]+)?(?:[eE][+\-]?[0-9]+)?(?![A-Za-z0-9_]))")},
         {"ID", regex(R"(^[A-Za-z_][A-Za-z0-9_]*)")},
-        {"OP2", regex(R"(^(==|!=|<=|>=|&&|\|\||<<|>>|\+\+|--|->|\+=|-=|\*=|/=|%=|&=|\|=|\^=))")},
+        {"OP2", regex(R"(^(==|!=|<=|>=|&&|\|\||<<|>>|\+\+|--|->|\*\*|\+=|-=|\*=|/=|%=|&=|\|=|\^=))")},
         {"OP1", regex(R"(^[()\{\}\[\];,:\.\+\-\*\/%<>=!&\|\^\~\?\'\"])")}};
 
     static void advPos(const string &lex, int &line, int &col)
@@ -963,6 +963,10 @@ static void printStmt(const StmtPtr &s, int ind = 0)
         pad(ind);
         cout << "]\n";
     }
+    else if (s->kind == "Break") {
+        pad(ind);
+        cout << "Break\n";
+    }
     else
     {
         pad(ind);
@@ -1182,6 +1186,13 @@ struct Parser
             s->block = parseBlock();
             return s;
         }
+        if (peek().type == "T_BREAK") {
+            i++;
+            expect("T_SEMICOLON", "Expected ';' after break");
+            auto s = make_shared<Stmt>();
+            s->kind = "Break";
+            return s;
+        }
 
         if (peek().type == "T_IF")
         {
@@ -1300,13 +1311,12 @@ struct Parser
 
     // Expressions (precedence climbing)
     ExprPtr parseExpr() { return parseAssign(); }
-    ExprPtr parseAssign()
-    {
-        auto lhs = parseOr();
-        if (match("T_ASSIGNOP"))
-        {
+
+    ExprPtr parseAssign() {
+        auto lhs = parseLOr();
+        if (match("T_ASSIGNOP")) {
             Token op = ts[i - 1];
-            auto rhs = parseAssign();
+            auto rhs = parseAssign(); // right-assoc
             auto e = make_shared<Expr>();
             e->kind = "Binary";
             e->op = op.type;
@@ -1315,13 +1325,12 @@ struct Parser
         }
         return lhs;
     }
-    ExprPtr parseOr()
-    {
-        auto e = parseAnd();
-        while (match("T_OROR"))
-        {
+
+    ExprPtr parseLOr() {
+        auto e = parseLAnd();
+        while (match("T_OROR")) {
             Token op = ts[i - 1];
-            auto r = parseAnd();
+            auto r = parseLAnd();
             auto n = make_shared<Expr>();
             n->kind = "Binary";
             n->op = op.type;
@@ -1330,11 +1339,52 @@ struct Parser
         }
         return e;
     }
-    ExprPtr parseAnd()
-    {
+
+    ExprPtr parseLAnd() {
+        auto e = parseBOr();
+        while (match("T_ANDAND")) {
+            Token op = ts[i - 1];
+            auto r = parseBOr();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+
+    ExprPtr parseBOr() {
+        auto e = parseBXor();
+        while (match("T_PIPE")) {
+            Token op = ts[i - 1];
+            auto r = parseBXor();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+
+    ExprPtr parseBXor() {
+        auto e = parseBAnd();
+        while (match("T_CARET")) {
+            Token op = ts[i - 1];
+            auto r = parseBAnd();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+
+    ExprPtr parseBAnd() {
         auto e = parseEq();
-        while (match("T_ANDAND"))
-        {
+        while (match("T_AMP")) {
             Token op = ts[i - 1];
             auto r = parseEq();
             auto n = make_shared<Expr>();
@@ -1345,11 +1395,10 @@ struct Parser
         }
         return e;
     }
-    ExprPtr parseEq()
-    {
+
+    ExprPtr parseEq() {
         auto e = parseRel();
-        while (peek().type == "T_EQUALSOP" || peek().type == "T_NEQ")
-        {
+        while (peek().type == "T_EQUALSOP" || peek().type == "T_NEQ") {
             Token op = peek();
             i++;
             auto r = parseRel();
@@ -1361,11 +1410,26 @@ struct Parser
         }
         return e;
     }
-    ExprPtr parseRel()
-    {
+
+    ExprPtr parseRel() {
+        auto e = parseShift();
+        while (peek().type == "T_LT" || peek().type == "T_GT" ||
+            peek().type == "T_LTE" || peek().type == "T_GTE") {
+            Token op = peek();
+            i++;
+            auto r = parseShift();
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            e = n;
+        }
+        return e;
+    }
+
+    ExprPtr parseShift() {
         auto e = parseAdd();
-        while (peek().type == "T_LT" || peek().type == "T_GT" || peek().type == "T_LTE" || peek().type == "T_GTE")
-        {
+        while (peek().type == "T_SHL" || peek().type == "T_SHR") {
             Token op = peek();
             i++;
             auto r = parseAdd();
@@ -1377,11 +1441,10 @@ struct Parser
         }
         return e;
     }
-    ExprPtr parseAdd()
-    {
+
+    ExprPtr parseAdd() {
         auto e = parseMul();
-        while (peek().type == "T_PLUS" || peek().type == "T_MINUS")
-        {
+        while (peek().type == "T_PLUS" || peek().type == "T_MINUS") {
             Token op = peek();
             i++;
             auto r = parseMul();
@@ -1393,14 +1456,13 @@ struct Parser
         }
         return e;
     }
-    ExprPtr parseMul()
-    {
-        auto e = parseUnary();
-        while (peek().type == "T_STAR" || peek().type == "T_SLASH" || peek().type == "T_PERCENT")
-        {
+
+    ExprPtr parseMul() {
+        auto e = parsePow(); // was: parseUnary()
+        while (peek().type == "T_STAR" || peek().type == "T_SLASH" || peek().type == "T_PERCENT") {
             Token op = peek();
             i++;
-            auto r = parseUnary();
+            auto r = parsePow(); // was: parseUnary()
             auto n = make_shared<Expr>();
             n->kind = "Binary";
             n->op = op.type;
@@ -1409,10 +1471,24 @@ struct Parser
         }
         return e;
     }
-    ExprPtr parseUnary()
-    {
-        if (peek().type == "T_PLUS" || peek().type == "T_MINUS" || peek().type == "T_BANG")
-        {
+
+    ExprPtr parsePow() {
+        auto e = parseUnary();
+        if (match("T_POW")) {
+            Token op = ts[i - 1];
+            auto r = parsePow(); // right-associative
+            auto n = make_shared<Expr>();
+            n->kind = "Binary";
+            n->op = op.type;
+            n->args = {e, r};
+            return n;
+        }
+        return e;
+    }
+
+    ExprPtr parseUnary() {
+        if (peek().type == "T_PLUS" || peek().type == "T_MINUS" ||
+            peek().type == "T_BANG" || peek().type == "T_TILDE") { // add '~'
             Token op = peek();
             i++;
             auto e = make_shared<Expr>();
@@ -1423,6 +1499,7 @@ struct Parser
         }
         return parsePostfix();
     }
+
     ExprPtr parsePostfix()
     {
         auto e = parsePrimary();
@@ -1533,6 +1610,30 @@ struct Parser
 static const string SAMPLE_CPP1 = R"(
 int h=a+100-20/b*3;
 )";
+// static const string SAMPLE_CPP = R"(
+// #include <iostream>
+// int main() {
+//     int f=5;
+//     int b=10;
+//     int z=2;
+//     int a = 3;
+//     int h = 6 * f + 3 * 2 - b * b * z * z;
+//     int c = 10 - (-b * 10 + 12) + (5 - 10);
+
+//     // control flow
+//     if (a == 3) { a = a + 1; } else { a = a - 1; }
+//     int p = 2 ** 3 ** 2;   // parses as 2 ** (3 ** 2) = 2 ** 9
+//     float q = 2.0 ** 3; 
+
+//     for (int i = 0; i < 5; i = i + 1) { b = b + i; }
+//     int y = (a & b) | (z ^ 3);
+//     int s = (b << 2) >> 1;
+//     int nb = ~a;
+//     return add(a, b);
+// }
+// // trailing comment
+// )";
+
 static const string SAMPLE_CPP = R"(
 #include <iostream>
 int main() {
@@ -1545,14 +1646,24 @@ int main() {
 
     // control flow
     if (a == 3) { a = a + 1; } else { a = a - 1; }
-    
-
     for (int i = 0; i < 5; i = i + 1) { b = b + i; }
 
-    return add(a, b);
+    // bitwise & shifts already in your grammar
+    int y = (a & b) | (z ^ 3);
+    int s = (b << 2) >> 1;
+    int nb = ~a;
+
+    // ----- NEW: exponentiation tests -----
+    int   p = 2 ** 3 ** 2;   // parses as 2 ** (3 ** 2)
+    float q = 2.0 ** 3;      // float result
+    int r = true ** 3;    // would trigger AttemptedExponentiationOfNonNumeric
+
+    //return add(a, b);
+    return 0;
 }
 // trailing comment
 )";
+
 
 static void printTokens(const vector<Token> &toks)
 {
@@ -1719,6 +1830,361 @@ int runScopeAnalysis(const vector<DeclPtr> &decls) {
 }
 
 
+// ------------------------------ Type Checker ------------------------------
+static inline bool isNumeric(const string& t) { return t == "int" || t == "float" || t == "char"; }
+static inline bool isInteger(const string& t) { return t == "int" || t == "char"; }
+static inline bool isBoolean(const string& t) { return t == "bool"; }
+static inline bool isString(const string& t) { return t == "string"; }
+
+// Common supertype for +,-,*,/ (very small, C-like)
+static string numericResult(const string& a, const string& b, const string& op) {
+    if (!isNumeric(a) || !isNumeric(b)) {
+        if (op == "T_PLUS" || op == "T_MINUS") throw runtime_error("TypeChkError: AttemptedAddOpOnNonNumeric");
+        if (op == "T_STAR" || op == "T_SLASH") throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+    }
+    // float wins if either side float
+    if (a == "float" || b == "float") return "float";
+    // else int if either side int, otherwise char
+    if (a == "int" || b == "int") return "int";
+    return "char";
+}
+struct FunctionSig {
+    string ret;
+    vector<string> params; // types only
+};
+
+struct TypeScope {
+    vector<unordered_map<string,string>> varScopes; // name -> type
+    unordered_map<string, FunctionSig> fns;
+
+    void enter() { varScopes.push_back({}); }
+    void exit()  { if (!varScopes.empty()) varScopes.pop_back(); }
+
+    bool addVar(const string& name, const string& ty) {
+        if (varScopes.empty()) enter();
+        auto& top = varScopes.back();
+        if (top.count(name)) return false;
+        top[name] = ty; return true;
+    }
+    string getVar(const string& name) const {
+        for (auto it = varScopes.rbegin(); it != varScopes.rend(); ++it) {
+            auto jt = it->find(name);
+            if (jt != it->end()) return jt->second;
+        }
+        return ""; // not found
+    }
+    bool addFn(const string& name, const FunctionSig& sig) {
+        return fns.emplace(name, sig).second;
+    }
+    const FunctionSig* getFn(const string& name) const {
+        auto it = fns.find(name);
+        return (it == fns.end()) ? nullptr : &it->second;
+    }
+};
+
+struct TypeChecker {
+    TypeScope scope;
+    string currentFnRet = "void";
+    bool foundReturnInThisFn = false;
+    int loopDepth = 0;
+
+    // ---- API ----
+    void checkProgram(const vector<DeclPtr>& decls) {
+        // First pass: register function signatures (name, params, ret)
+        scope.enter();
+        for (auto& d : decls) {
+            if (d->kind == "FnDecl") {
+                FunctionSig sig;
+                sig.ret = d->retType;
+                for (auto& p : d->params) sig.params.push_back(p.first);
+                if (!scope.addFn(d->fnName, sig)) {
+                    throw runtime_error("TypeChkError: ErroneousVarDecl (function redefinition)"); // simple reuse
+                }
+            }
+        }
+        // Second pass: globals and function bodies
+        for (auto& d : decls) checkDecl(d);
+        scope.exit();
+    }
+
+    void checkDecl(const DeclPtr& d) {
+        if (d->kind == "VarDecl") {
+            if (d->varType == "void") throw runtime_error("TypeChkError: ErroneousVarDecl");
+            if (!scope.addVar(d->varName, d->varType))
+                throw runtime_error("TypeChkError: ErroneousVarDecl");
+            if (d->varInit) {
+                string rhsT = typeOf(d->varInit);
+                if (!assignCompatible(d->varType, rhsT))
+                    throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+            }
+        } else if (d->kind == "FnDecl") {
+            // function scope
+            scope.enter();
+            currentFnRet = d->retType;
+            foundReturnInThisFn = false;
+
+            // params
+            for (auto& [pty, pnm] : d->params) {
+                if (pty == "void") throw runtime_error("TypeChkError: ErroneousVarDecl");
+                if (!scope.addVar(pnm, pty))
+                    throw runtime_error("TypeChkError: ErroneousVarDecl");
+            }
+            // body
+            for (auto& s : d->body) checkStmt(s);
+
+            scope.exit();
+
+            // Non-void functions must have a return somewhere (very simple check)
+            if (currentFnRet != "void" && !foundReturnInThisFn)
+                throw runtime_error("TypeChkError: ReturnStmtNotFound");
+            currentFnRet = "void";
+        }
+    }
+
+    // ---- Statements ----
+    void checkStmt(const StmtPtr& s) {
+        if (!s) { /* empty stmt node shouldn't happen */ return; }
+
+        if (s->kind == "VarDecl") {
+            if (s->typeTok == "void") throw runtime_error("TypeChkError: ErroneousVarDecl");
+            if (!scope.addVar(s->name, s->typeTok))
+                throw runtime_error("TypeChkError: ErroneousVarDecl");
+            if (s->init) {
+                string rt = typeOf(s->init);
+                if (!assignCompatible(s->typeTok, rt))
+                    throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+            }
+        } else if (s->kind == "ExprStmt") {
+            if (!s->expr) throw runtime_error("TypeChkError: EmptyExpression");
+            (void) typeOf(s->expr);
+        } else if (s->kind == "Return") {
+            string rt = "void";
+            if (s->ret) rt = typeOf(s->ret);
+            if (!assignCompatible(currentFnRet, rt))
+                throw runtime_error("TypeChkError: ErroneousReturnType");
+            if (currentFnRet == "void" && rt != "void")
+                throw runtime_error("TypeChkError: ErroneousReturnType");
+            foundReturnInThisFn = true;
+        } else if (s->kind == "If") {
+            string ct = typeOf(s->ifCond);
+            if (!isBoolean(ct))
+                throw runtime_error("TypeChkError: NonBooleanCondStmt");
+            scope.enter();
+            for (auto& st : s->ifBlock) checkStmt(st);
+            scope.exit();
+            scope.enter();
+            for (auto& st : s->elseBlock) checkStmt(st);
+            scope.exit();
+        } else if (s->kind == "While") {
+            string ct = typeOf(s->whileCond);
+            if (!isBoolean(ct))
+                throw runtime_error("TypeChkError: NonBooleanCondStmt");
+            loopDepth++;
+            scope.enter();
+            for (auto& st : s->whileBlock) checkStmt(st);
+            scope.exit();
+            loopDepth--;
+        } else if (s->kind == "For") {
+            scope.enter();
+            loopDepth++;
+            if (s->hasInitDecl) {
+                if (s->forInitType == "void") throw runtime_error("TypeChkError: ErroneousVarDecl");
+                if (!scope.addVar(s->forInitName, s->forInitType))
+                    throw runtime_error("TypeChkError: ErroneousVarDecl");
+                if (s->forInitExpr) {
+                    string rt = typeOf(s->forInitExpr);
+                    if (!assignCompatible(s->forInitType, rt))
+                        throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+                }
+            } else {
+                if (s->expr) (void) typeOf(s->expr);
+            }
+            if (s->forCond) {
+                string ct = typeOf(s->forCond);
+                if (!isBoolean(ct))
+                    throw runtime_error("TypeChkError: NonBooleanCondStmt");
+            }
+            if (s->forUpdt) (void) typeOf(s->forUpdt);
+            for (auto& st : s->forBlock) checkStmt(st);
+            loopDepth--;
+            scope.exit();
+        } else if (s->kind == "Block") {
+            scope.enter();
+            for (auto& st : s->block) checkStmt(st);
+            scope.exit();
+        } else if (s->kind == "Break") {
+            if (loopDepth <= 0) throw runtime_error("TypeChkError: ErroneousBreak");
+        } else {
+            // unknown stmt kind
+        }
+    }
+
+    // ---- Expressions -> infer type or throw ----
+    string typeOf(const ExprPtr& e) {
+        if (!e) return "void";
+        if (e->kind == "Literal") {
+            if (e->litType == "T_INTLIT") return "int";
+            if (e->litType == "T_FLOATLIT") return "float";
+            if (e->litType == "T_BOOLLIT") return "bool";
+            if (e->litType == "T_CHARLIT") return "char";
+            if (e->litType == "T_STRINGLIT") return "string";
+            throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+        }
+        if (e->kind == "Identifier") {
+            string t = scope.getVar(e->value);
+            if (t.empty())
+                throw runtime_error("TypeChkError: ExpressionTypeMismatch"); // undeclared (should've been caught by scope pass)
+            return t;
+        }
+        if (e->kind == "Grouping") {
+            return typeOf(e->args[0]);
+        }
+        if (e->kind == "Index") {
+            // arrays not modeled -> treat as error
+            throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+        }
+        if (e->kind == "Call") {
+            const FunctionSig* sig = scope.getFn(e->value);
+            if (!sig) throw runtime_error("TypeChkError: ExpressionTypeMismatch"); // undefined fn (scope pass would flag)
+            if ((int)e->args.size() != (int)sig->params.size())
+                throw runtime_error("TypeChkError: FnCallParamCount");
+            for (size_t i = 0; i < sig->params.size(); ++i) {
+                string at = typeOf(e->args[i]);
+                if (!assignCompatible(sig->params[i], at))
+                    throw runtime_error("TypeChkError: FnCallParamType");
+            }
+            return sig->ret;
+        }
+        if (e->kind == "Unary") {
+            string a = typeOf(e->args[0]);
+            if (e->op == "T_PLUS" || e->op == "T_MINUS") {
+                if (!isNumeric(a)) throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+                return a;
+            } else if (e->op == "T_BANG") {
+                if (!isBoolean(a)) throw runtime_error("TypeChkError: AttemptedBoolOpOnNonBools");
+                return "bool";
+            } else if (e->op == "T_TILDE") {
+                if (!isInteger(a)) throw runtime_error("TypeChkError: AttemptedBitOpOnNonNumeric");
+                return a;
+            } else {
+                throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+            }
+        }
+        if (e->kind == "Binary") {
+            const string& op = e->op;
+            if (op == "T_ASSIGNOP") {
+                // Very simple: only allow identifier on LHS
+                if (e->args[0]->kind != "Identifier")
+                    throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+                string lt = typeOf(e->args[0]);
+                string rt = typeOf(e->args[1]);
+                if (!assignCompatible(lt, rt))
+                    throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+                return lt;
+            }
+
+            string a = typeOf(e->args[0]);
+            string b = typeOf(e->args[1]);
+
+            // logical
+            if (op == "T_ANDAND" || op == "T_OROR") {
+                if (!isBoolean(a) || !isBoolean(b))
+                    throw runtime_error("TypeChkError: AttemptedBoolOpOnNonBools");
+                return "bool";
+            }
+
+            // equality
+            if (op == "T_EQUALSOP" || op == "T_NEQ") {
+                // allow if same type or both numeric
+                bool ok = (a == b) || (isNumeric(a) && isNumeric(b));
+                if (!ok) throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+                return "bool";
+            }
+
+            // relational
+            if (op == "T_LT" || op == "T_GT" || op == "T_LTE" || op == "T_GTE") {
+                if (!isNumeric(a) || !isNumeric(b))
+                    throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+                return "bool";
+            }
+
+            // arithmetic
+            if (op == "T_PLUS" || op == "T_MINUS" || op == "T_STAR" || op == "T_SLASH") {
+                return numericResult(a, b, op);
+            }
+            if (op == "T_PERCENT") {
+                if (!isInteger(a) || !isInteger(b))
+                    throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+                return a; // int-ish
+            }
+
+            // bitwise
+            if (op == "T_AMP" || op == "T_PIPE" || op == "T_CARET") {
+                if (!isInteger(a) || !isInteger(b))
+                    throw runtime_error("TypeChkError: AttemptedBitOpOnNonNumeric");
+                return (a == "int" || b == "int") ? "int" : "char";
+            }
+            if (op == "T_SHL" || op == "T_SHR") {
+                if (!isInteger(a) || !isInteger(b))
+                    throw runtime_error("TypeChkError: AttemptedShiftOnNonInt");
+                return a;
+            }
+
+            // exponentiation
+            if (op == "T_POW") {
+                if (!isNumeric(a) || !isNumeric(b))
+                    throw runtime_error("TypeChkError: AttemptedExponentiationOfNonNumeric");
+                // numeric result: float if any side is float, else int/char collapses like other numeric ops
+                return (a == "float" || b == "float") ? "float" : ((a == "int" || b == "int") ? "int" : "char");
+            }
+
+            throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+        }
+
+        throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+    }
+
+    // C-ish assignment compatibility
+    static bool assignCompatible(const string& to, const string& from) {
+        if (to == from) return true;
+        if (to == "void") return (from == "void");
+        // numeric widening: char -> int -> float (very rough)
+        if (isNumeric(to) && isNumeric(from)) {
+            if (to == "float") return true;
+            if (to == "int") return (from == "int" || from == "char");
+            if (to == "char") return (from == "char");
+        }
+        if (to == "bool" && from == "bool") return true;
+        if (to == "string" && from == "string") return true;
+        return false;
+    }
+};
+
+int runTypeCheck(const vector<DeclPtr>& decls) {
+    try {
+        // Build a typed env from decls and check
+        TypeChecker tc;
+
+        // check 1
+        // for (auto& d : decls) {
+        //     if (d->kind == "FnDecl") {
+        //         FunctionSig sig;
+        //         sig.ret = d->retType;
+        //         for (auto& p : d->params) sig.params.push_back(p.first);
+        //         if (!tc.scope.addFn(d->fnName, sig))
+        //             throw runtime_error("TypeChkError: ErroneousVarDecl (function redefinition)");
+        //     }
+        // }
+        // Now actually check everything
+        tc.checkProgram(decls);
+
+        cout << "Type check: OK (no errors)\n";
+        return 0;
+    } catch (const runtime_error& e) {
+        cerr << e.what() << "\n";
+        return 1;
+    }
+}
 
 
 
@@ -1768,6 +2234,7 @@ int main()
         cout << "]\n";
         
         runScopeAnalysis(decls);
+        runTypeCheck(decls);
     }
     catch (const LexError &e)
     {
@@ -1792,4 +2259,22 @@ int main()
 
 
 
+// previously chain follow these
+// assign -> or(||) -> and(&&) -> eq -> rel -> add -> mul -> unary -> postfix -> primary
 
+// now
+// chain follows these steps
+// assign
+//   -> lor (||)
+//     -> land (&&)
+//       -> bor (|)
+//         -> bxor (^)
+//           -> band (&)
+//             -> eq (==, !=)
+//               -> rel (<, >, <=, >=)
+//                 -> shift (<<, >>)
+//                   -> add (+, -)
+//                     -> mul (*, /, %)
+//                       -> pow (**)
+//                       -> unary (+, -, !, ~)
+//                         -> postfix -> primary
