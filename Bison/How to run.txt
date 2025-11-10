@@ -1,0 +1,7 @@
+Have an input file named "input.cpp" in the same directory as the Bison parser.
+Run the Bison parser using the command:
+    `win_bison -o parser.cpp bison.y`
+Compile the generated parser using a C++ compiler:
+    `g++ parser.cpp -o parser.exe`
+Execute the compiled program:
+    `type .\input.cpp | .\parser.exe`
