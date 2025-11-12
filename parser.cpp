@@ -1607,62 +1607,6 @@ struct Parser
         throw ParseError(string("Expected expression at ") + toLoc(t));
     }
 };
-static const string SAMPLE_CPP1 = R"(
-int h=a+100-20/b*3;
-)";
-// static const string SAMPLE_CPP = R"(
-// #include <iostream>
-// int main() {
-//     int f=5;
-//     int b=10;
-//     int z=2;
-//     int a = 3;
-//     int h = 6 * f + 3 * 2 - b * b * z * z;
-//     int c = 10 - (-b * 10 + 12) + (5 - 10);
-
-//     // control flow
-//     if (a == 3) { a = a + 1; } else { a = a - 1; }
-//     int p = 2 ** 3 ** 2;   // parses as 2 ** (3 ** 2) = 2 ** 9
-//     float q = 2.0 ** 3; 
-
-//     for (int i = 0; i < 5; i = i + 1) { b = b + i; }
-//     int y = (a & b) | (z ^ 3);
-//     int s = (b << 2) >> 1;
-//     int nb = ~a;
-//     return add(a, b);
-// }
-// // trailing comment
-// )";
-
-static const string SAMPLE_CPP = R"(
-#include <iostream>
-int main() {
-    int f=5;
-    int b=10;
-    int z=2;
-    int a = 3;
-    int h = 6 * f + 3 * 2 - b * b * z * z;
-    int c = 10 - (-b * 10 + 12) + (5 - 10);
-
-    // control flow
-    if (a == 3) { a = a + 1; } else { a = a - 1; }
-    for (int i = 0; i < 5; i = i + 1) { b = b + i; }
-
-    // bitwise & shifts already in your grammar
-    int y = (a & b) | (z ^ 3);
-    int s = (b << 2) >> 1;
-    int nb = ~a;
-
-    // ----- NEW: exponentiation tests -----
-    int   p = 2 ** 3 ** 2;   // parses as 2 ** (3 ** 2)
-    float q = 2.0 ** 3;      // float result
-    int r = true ** 3;    // would trigger AttemptedExponentiationOfNonNumeric
-
-    //return add(a, b);
-    return 0;
-}
-// trailing comment
-)";
 
 
 static void printTokens(const vector<Token> &toks)
@@ -2040,9 +1984,12 @@ struct TypeChecker {
             return typeOf(e->args[0]);
         }
         if (e->kind == "Index") {
-            // arrays not modeled -> treat as error
-            throw runtime_error("TypeChkError: ExpressionTypeMismatch");
+            string bt = typeOf(e->args[0]); 
+            string it = typeOf(e->args[1]);
+            if (!isInteger(it)) throw runtime_error("TypeChkError: AttemptedIndexWithNonInt");
+            return "int";
         }
+
         if (e->kind == "Call") {
             const FunctionSig* sig = scope.getFn(e->value);
             if (!sig) throw runtime_error("TypeChkError: ExpressionTypeMismatch"); // undefined fn (scope pass would flag)
@@ -2073,15 +2020,31 @@ struct TypeChecker {
         if (e->kind == "Binary") {
             const string& op = e->op;
             if (op == "T_ASSIGNOP") {
-                // Very simple: only allow identifier on LHS
-                if (e->args[0]->kind != "Identifier")
+                string lt;
+
+                if (e->args[0]->kind == "Identifier") {
+                    // normal: x = rhs
+                    lt = typeOf(e->args[0]);
+                } else if (e->args[0]->kind == "Index") {
+                    // array-like: base[idx] = rhs
+                    // ensure index is integer-ish
+                    string it = typeOf(e->args[0]->args[1]);
+                    if (!isInteger(it))
+                        throw runtime_error("TypeChkError: AttemptedIndexWithNonInt");
+
+                    // element type — keep it simple for now
+                    // (matches the earlier permissive Index handling)
+                    lt = "int";
+                } else {
                     throw runtime_error("TypeChkError: ExpressionTypeMismatch");
-                string lt = typeOf(e->args[0]);
+                }
+
                 string rt = typeOf(e->args[1]);
                 if (!assignCompatible(lt, rt))
                     throw runtime_error("TypeChkError: ExpressionTypeMismatch");
                 return lt;
             }
+
 
             string a = typeOf(e->args[0]);
             string b = typeOf(e->args[1]);
@@ -2190,6 +2153,66 @@ int runTypeCheck(const vector<DeclPtr>& decls) {
 
 
 
+static const string SAMPLE_CPP1 = R"(
+int h=a+100-20/b*3;
+)";
+// static const string SAMPLE_CPP = R"(
+// #include <iostream>
+// int main() {
+//     int f=5;
+//     int b=10;
+//     int z=2;
+//     int a = 3;
+//     int h = 6 * f + 3 * 2 - b * b * z * z;
+//     int c = 10 - (-b * 10 + 12) + (5 - 10);
+
+//     // control flow
+//     if (a == 3) { a = a + 1; } else { a = a - 1; }
+//     int p = 2 ** 3 ** 2;   // parses as 2 ** (3 ** 2) = 2 ** 9
+//     float q = 2.0 ** 3; 
+
+//     for (int i = 0; i < 5; i = i + 1) { b = b + i; }
+//     int y = (a & b) | (z ^ 3);
+//     int s = (b << 2) >> 1;
+//     int nb = ~a;
+//     return add(a, b);
+// }
+// // trailing comment
+// )";
+
+static const string SAMPLE_CPP = R"(
+#include <iostream>
+int main() {
+    int f=5;
+    int b=10;
+    int z=2;
+    int a = 3;
+    int h = 6 * f + 3 * 2 - b * b * z * z;
+    int c = 10 - (-b * 10 + 12) + (5 - 10);
+
+    // control flow
+    if (a == 3) { a = a + 1; } else { a = a - 1; }
+    for (int i = 0; i < 5; i = i + 1) { b = b + i; }
+
+    // bitwise & shifts already in your grammar
+    int y = (a & b) | (z ^ 3);
+    int s = (b << 2) >> 1;
+    int nb = ~a;
+
+    // ----- NEW: exponentiation tests -----
+    int   p = 2 ** 3 ** 2;   // parses as 2 ** (3 ** 2)
+    float q = 2.0 ** 3;      // float result
+    int r = true ** 3;    // would trigger AttemptedExponentiationOfNonNumeric
+
+    //return add(a, b);
+    return 0;
+}
+// trailing comment
+)";
+
+
+
+
 
 
 int main()
@@ -2235,6 +2258,7 @@ int main()
         
         runScopeAnalysis(decls);
         runTypeCheck(decls);
+
     }
     catch (const LexError &e)
     {
