@@ -2453,6 +2453,384 @@ int runTypeCheck(const vector<DeclPtr> &decls)
     }
 }
 
+
+
+
+
+//IR generation
+
+struct IRGenError : runtime_error {
+    using runtime_error::runtime_error;
+};
+
+struct TAC {
+    string op;   
+    string a1;
+    string a2;
+    string dst;  
+};
+
+static void printTAC(const vector<TAC>& code) {
+    cout << "\nTAC:\n";
+    for (auto& q : code) {
+        if (q.op == "label") {
+            cout << q.dst << ":\n";
+            continue;
+        }
+        if (q.op == "func_begin") {
+            cout << "\n.func " << q.dst << " begin\n";
+            continue;
+        }
+        if (q.op == "func_end") {
+            cout << ".func " << q.dst << " end\n";
+            continue;
+        }
+        if (q.op == "goto") {
+            cout << "  goto " << q.dst << "\n";
+            continue;
+        }
+        if (q.op == "ifz") {
+            cout << "  ifz " << q.a1 << " goto " << q.dst << "\n";
+            continue;
+        }
+        if (q.op == "param") {
+            cout << "  param " << q.a1 << "\n";
+            continue;
+        }
+        if (q.op == "call") {
+            if (!q.dst.empty())
+                cout << "  " << q.dst << " = call " << q.a1 << ", " << q.a2 << "\n";
+            else
+                cout << "  call " << q.a1 << ", " << q.a2 << "\n";
+            continue;
+        }
+        if (q.op == "ret") {
+            if (!q.a1.empty()) cout << "  ret " << q.a1 << "\n";
+            else cout << "  ret\n";
+            continue;
+        }
+        if (q.op == "copy") {
+            cout << "  " << q.dst << " = " << q.a1 << "\n";
+            continue;
+        }
+        if (q.op == "load") {
+            cout << "  " << q.dst << " = load " << q.a1 << ", " << q.a2 << "\n";
+            continue;
+        }
+        if (q.op == "store") {
+            cout << "  store " << q.a1 << ", " << q.a2 << ", " << q.dst << "\n";
+            continue;
+        }
+
+        if (!q.dst.empty())
+            cout << "  " << q.dst << " = " << q.op << " " << q.a1
+                 << (q.a2.empty() ? "" : (", " + q.a2)) << "\n";
+        else
+            cout << "  " << q.op << " " << q.a1
+                 << (q.a2.empty() ? "" : (", " + q.a2)) << "\n";
+    }
+}
+
+struct IRBuilder {
+    vector<TAC> code;
+    int tempCounter = 0;
+    int labelCounter = 0;
+
+    vector<string> breakTargets;
+
+    string newTemp() { return "%t" + to_string(++tempCounter); }
+    string newLabel(const string& base = "L") { return base + to_string(++labelCounter); }
+
+    static string litValue(const ExprPtr& e) {
+        if (e->kind == "Literal") {
+            if (e->litType == "T_STRINGLIT") return "\"" + escapeLexeme(e->value) + "\"";
+            if (e->litType == "T_CHARLIT")   return "'" + escapeLexeme(e->value) + "'";
+            if (e->litType == "T_BOOLLIT")   return (e->value == "true" ? "1" : "0");
+            return e->value;
+        }
+        throw IRGenError("IRGenError: expected literal");
+    }
+
+    static string binOpMnemonic(const string& tok) {
+        if (tok == "T_PLUS") return "add";
+        if (tok == "T_MINUS") return "sub";
+        if (tok == "T_STAR") return "mul";
+        if (tok == "T_SLASH") return "div";
+        if (tok == "T_PERCENT") return "mod";
+
+        if (tok == "T_AMP") return "and";
+        if (tok == "T_PIPE") return "or";
+        if (tok == "T_CARET") return "xor";
+        if (tok == "T_SHL") return "shl";
+        if (tok == "T_SHR") return "shr";
+
+        if (tok == "T_LT") return "lt";
+        if (tok == "T_GT") return "gt";
+        if (tok == "T_LTE") return "le";
+        if (tok == "T_GTE") return "ge";
+        if (tok == "T_EQUALSOP") return "eq";
+        if (tok == "T_NEQ") return "neq";
+
+        if (tok == "T_POW") return "pow";
+
+        return "";
+    }
+
+    static string unOpMnemonic(const string& tok) {
+        if (tok == "T_PLUS")  return "uplus"; 
+        if (tok == "T_MINUS") return "neg";
+        if (tok == "T_BANG")  return "not";
+        if (tok == "T_TILDE") return "bnot";
+        return "";
+    }
+    string genExpr(const ExprPtr& e) {
+        if (!e) return ""; 
+
+        if (e->kind == "Literal") {
+            string t = newTemp();
+            code.push_back({"copy", litValue(e), "", t});
+            return t;
+        }
+        if (e->kind == "Identifier") {
+            return e->value;
+        }
+        if (e->kind == "Grouping") {
+            return genExpr(e->args[0]);
+        }
+        if (e->kind == "Index") {
+            string base = genExpr(e->args[0]);
+            string idx  = genExpr(e->args[1]);
+            string t = newTemp();
+            code.push_back({"load", base, idx, t});
+            return t;
+        }
+        if (e->kind == "Unary") {
+            string a = genExpr(e->args[0]);
+            string op = unOpMnemonic(e->op);
+            if (op.empty()) throw IRGenError("IRGenError: unsupported unary op");
+            if (op == "uplus") return a;
+            string t = newTemp();
+            code.push_back({op, a, "", t});
+            return t;
+        }
+        if (e->kind == "Binary") {
+
+            if (e->op == "T_ASSIGNOP") {
+                string rhs = genExpr(e->args[1]);
+
+                if (e->args[0]->kind == "Identifier") {
+                    string dst = e->args[0]->value;
+                    code.push_back({"copy", rhs, "", dst});
+                    return dst;
+                } else if (e->args[0]->kind == "Index") {
+                    string base = genExpr(e->args[0]->args[0]);
+                    string idx  = genExpr(e->args[0]->args[1]);
+                    code.push_back({"store", base, idx, rhs}); 
+                    return rhs; 
+                } else {
+                    throw IRGenError("IRGenError: assignment LHS must be identifier or index");
+                }
+            }
+
+            if (e->op == "T_ANDAND") {
+                string t = newTemp();
+                string Lfalse = newLabel("Lfalse");
+                string Ldone  = newLabel("Ldone");
+
+                string a = genExpr(e->args[0]);
+                code.push_back({"ifz", a, "", Lfalse});     
+                string b = genExpr(e->args[1]);
+                code.push_back({"neq", b, "0", t});         
+                code.push_back({"goto", "", "", Ldone});
+                code.push_back({"label", "", "", Lfalse});
+                code.push_back({"copy", "0", "", t});        
+                code.push_back({"label", "", "", Ldone});
+                return t;
+            }
+
+            if (e->op == "T_OROR") {
+                string t = newTemp();
+                string Ltrue = newLabel("Ltrue");
+                string Ldone = newLabel("Ldone");
+
+                string a = genExpr(e->args[0]);
+                code.push_back({"neq", a, "0", t});         
+                code.push_back({"ifz", t, "", Ltrue});      
+                code.push_back({"goto", "", "", Ldone});     
+                code.push_back({"label", "", "", Ltrue});
+                {
+                    string b = genExpr(e->args[1]);
+                    code.push_back({"neq", b, "0", t});   
+                }
+                code.push_back({"label", "", "", Ldone});
+                return t;
+            }
+
+            string op = binOpMnemonic(e->op);
+            if (op.empty()) throw IRGenError("IRGenError: unsupported binary op");
+
+            string a = genExpr(e->args[0]);
+            string b = genExpr(e->args[1]);
+            string t = newTemp();
+            code.push_back({op, a, b, t});
+            return t;
+        }
+        if (e->kind == "Call") {
+            for (auto& arg : e->args) {
+                string av = genExpr(arg);
+                code.push_back({"param", av, "", ""});
+            }
+            string t = newTemp();
+            code.push_back({"call", e->value, to_string((int)e->args.size()), t});
+            return t;
+        }
+
+        throw IRGenError("IRGenError: unsupported expression kind");
+    }
+
+    void genStmt(const StmtPtr& s) {
+        if (!s) return;
+
+        if (s->kind == "ExprStmt") {
+            (void)genExpr(s->expr);
+            return;
+        }
+        if (s->kind == "VarDecl") {
+            if (s->init) {
+                string r = genExpr(s->init);
+                code.push_back({"copy", r, "", s->name});
+            }
+            return;
+        }
+        if (s->kind == "Return") {
+            if (s->ret) {
+                string r = genExpr(s->ret);
+                code.push_back({"ret", r, "", ""});
+            } else {
+                code.push_back({"ret", "", "", ""});
+            }
+            return;
+        }
+        if (s->kind == "Break") {
+            if (breakTargets.empty()) throw IRGenError("IRGenError: 'break' outside of loop");
+            code.push_back({"goto", "", "", breakTargets.back()});
+            return;
+        }
+        if (s->kind == "Block") {
+            for (auto& st : s->block) genStmt(st);
+            return;
+        }
+        if (s->kind == "If") {
+            string Lelse = newLabel("Lelse");
+            string Lend  = newLabel("Lendif");
+            string c = genExpr(s->ifCond);
+            code.push_back({"ifz", c, "", Lelse});
+            for (auto& st : s->ifBlock) genStmt(st);
+            code.push_back({"goto", "", "", Lend});
+            code.push_back({"label", "", "", Lelse});
+            for (auto& st : s->elseBlock) genStmt(st);
+            code.push_back({"label", "", "", Lend});
+            return;
+        }
+        if (s->kind == "While") {
+            string Lcond = newLabel("Lwhile_cond");
+            string Lbody = newLabel("Lwhile_body");
+            string Lend  = newLabel("Lwhile_end");
+
+            code.push_back({"label", "", "", Lcond});
+            {
+                string c = genExpr(s->whileCond);
+                code.push_back({"ifz", c, "", Lend});
+            }
+            code.push_back({"label", "", "", Lbody});
+            breakTargets.push_back(Lend);
+            for (auto& st : s->whileBlock) genStmt(st);
+            breakTargets.pop_back();
+            code.push_back({"goto", "", "", Lcond});
+            code.push_back({"label", "", "", Lend});
+            return;
+        }
+        if (s->kind == "For") {
+            string Lcond = newLabel("Lfor_cond");
+            string Lbody = newLabel("Lfor_body");
+            string Lend  = newLabel("Lfor_end");
+            string Lupd  = newLabel("Lfor_upd");
+
+            if (s->hasInitDecl) {
+                if (s->forInitExpr) {
+                    string r = genExpr(s->forInitExpr);
+                    code.push_back({"copy", r, "", s->forInitName});
+                }
+            } else if (s->expr) {
+                (void)genExpr(s->expr);
+            }
+
+            code.push_back({"label", "", "", Lcond});
+            if (s->forCond) {
+                string c = genExpr(s->forCond);
+                code.push_back({"ifz", c, "", Lend});
+            } 
+            code.push_back({"label", "", "", Lbody});
+            breakTargets.push_back(Lend);
+            for (auto& st : s->forBlock) genStmt(st);
+            breakTargets.pop_back();
+            code.push_back({"label", "", "", Lupd});
+            if (s->forUpdt) (void)genExpr(s->forUpdt);
+            code.push_back({"goto", "", "", Lcond});
+            code.push_back({"label", "", "", Lend});
+            return;
+        }
+
+        throw IRGenError("IRGenError: unsupported statement kind");
+    }
+
+    void genFunction(const DeclPtr& d) {
+        code.push_back({"func_begin", "", "", d->fnName});
+        for (auto& s : d->body) genStmt(s);
+        code.push_back({"func_end", "", "", d->fnName});
+    }
+
+    vector<TAC> genProgram(const vector<DeclPtr>& decls) {
+        code.clear();
+        tempCounter = 0;
+        labelCounter = 0;
+
+        for (auto& d : decls) {
+            if (d->kind == "VarDecl") {
+                if (d->varInit) {
+                    string r = genExpr(d->varInit);
+                    code.push_back({"copy", r, "", d->varName});
+                }
+            } else if (d->kind == "FnDecl") {
+                genFunction(d);
+            } else {
+                throw IRGenError("IRGenError: unknown decl kind");
+            }
+        }
+        return code;
+    }
+};
+
+int runIRGen(const vector<DeclPtr>& decls) {
+    try {
+        IRBuilder ir;
+        auto tac = ir.genProgram(decls);
+        printTAC(tac);
+        return 0;
+    } catch (const IRGenError& e) {
+        cerr << e.what() << "\n";
+        return 1;
+    } catch (const runtime_error& e) {
+        cerr << "IRGenCrash: " << e.what() << "\n";
+        return 1;
+    }
+}
+
+
+
+
+
+
 static const string SAMPLE_CPP1 = R"(
 int h=a+100-20/b*3;
 )";
@@ -2606,6 +2984,7 @@ int main()
         // your analysis passes
         runScopeAnalysis(decls);
         runTypeCheck(decls);
+        runIRGen(decls);
     }
     catch (const LexError &e)
     {
