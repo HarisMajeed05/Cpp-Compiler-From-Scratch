@@ -2458,7 +2458,6 @@ int runTypeCheck(const vector<DeclPtr> &decls)
 
 
 //IR generation
-
 struct IRGenError : runtime_error {
     using runtime_error::runtime_error;
 };
@@ -2469,7 +2468,6 @@ struct TAC {
     string a2;
     string dst;  
 };
-
 static void printTAC(const vector<TAC>& code) {
     cout << "\nTAC:\n";
     for (auto& q : code) {
@@ -2535,12 +2533,9 @@ struct IRBuilder {
     vector<TAC> code;
     int tempCounter = 0;
     int labelCounter = 0;
-
     vector<string> breakTargets;
-
     string newTemp() { return "%t" + to_string(++tempCounter); }
     string newLabel(const string& base = "L") { return base + to_string(++labelCounter); }
-
     static string litValue(const ExprPtr& e) {
         if (e->kind == "Literal") {
             if (e->litType == "T_STRINGLIT") return "\"" + escapeLexeme(e->value) + "\"";
@@ -2550,27 +2545,23 @@ struct IRBuilder {
         }
         throw IRGenError("IRGenError: expected literal");
     }
-
     static string binOpMnemonic(const string& tok) {
         if (tok == "T_PLUS") return "add";
         if (tok == "T_MINUS") return "sub";
         if (tok == "T_STAR") return "mul";
         if (tok == "T_SLASH") return "div";
         if (tok == "T_PERCENT") return "mod";
-
         if (tok == "T_AMP") return "and";
         if (tok == "T_PIPE") return "or";
         if (tok == "T_CARET") return "xor";
         if (tok == "T_SHL") return "shl";
         if (tok == "T_SHR") return "shr";
-
         if (tok == "T_LT") return "lt";
         if (tok == "T_GT") return "gt";
         if (tok == "T_LTE") return "le";
         if (tok == "T_GTE") return "ge";
         if (tok == "T_EQUALSOP") return "eq";
         if (tok == "T_NEQ") return "neq";
-
         if (tok == "T_POW") return "pow";
 
         return "";
@@ -2614,29 +2605,38 @@ struct IRBuilder {
             return t;
         }
         if (e->kind == "Binary") {
-
             if (e->op == "T_ASSIGNOP") {
-                string rhs = genExpr(e->args[1]);
-
-                if (e->args[0]->kind == "Identifier") {
-                    string dst = e->args[0]->value;
-                    code.push_back({"copy", rhs, "", dst});
+                ExprPtr lhs = e->args[0];
+                ExprPtr rhs = e->args[1];
+                if (lhs->kind == "Identifier") {
+                    string dst = lhs->value;
+                    if (rhs->kind == "Literal") {
+                        string v = litValue(rhs);  
+                        code.push_back({"copy", v, "", dst});
+                        return dst;
+                    }
+                    if (rhs->kind == "Identifier") {
+                        code.push_back({"copy", rhs->value, "", dst});
+                        return dst;
+                    }
+                    string rv = genExpr(rhs);
+                    code.push_back({"copy", rv, "", dst});
                     return dst;
-                } else if (e->args[0]->kind == "Index") {
-                    string base = genExpr(e->args[0]->args[0]);
-                    string idx  = genExpr(e->args[0]->args[1]);
-                    code.push_back({"store", base, idx, rhs}); 
-                    return rhs; 
-                } else {
-                    throw IRGenError("IRGenError: assignment LHS must be identifier or index");
                 }
-            }
+                if (lhs->kind == "Index") {
+                    string base = genExpr(lhs->args[0]);
+                    string idx  = genExpr(lhs->args[1]);
+                    string rv = genExpr(rhs);
+                    code.push_back({"store", base, idx, rv});
+                    return rv;
+                }
 
+                throw IRGenError("IRGenError: assignment LHS must be identifier or index");
+            }
             if (e->op == "T_ANDAND") {
                 string t = newTemp();
                 string Lfalse = newLabel("Lfalse");
                 string Ldone  = newLabel("Ldone");
-
                 string a = genExpr(e->args[0]);
                 code.push_back({"ifz", a, "", Lfalse});     
                 string b = genExpr(e->args[1]);
@@ -2647,12 +2647,10 @@ struct IRBuilder {
                 code.push_back({"label", "", "", Ldone});
                 return t;
             }
-
             if (e->op == "T_OROR") {
                 string t = newTemp();
                 string Ltrue = newLabel("Ltrue");
                 string Ldone = newLabel("Ldone");
-
                 string a = genExpr(e->args[0]);
                 code.push_back({"neq", a, "0", t});         
                 code.push_back({"ifz", t, "", Ltrue});      
@@ -2665,10 +2663,8 @@ struct IRBuilder {
                 code.push_back({"label", "", "", Ldone});
                 return t;
             }
-
             string op = binOpMnemonic(e->op);
             if (op.empty()) throw IRGenError("IRGenError: unsupported binary op");
-
             string a = genExpr(e->args[0]);
             string b = genExpr(e->args[1]);
             string t = newTemp();
@@ -2687,7 +2683,6 @@ struct IRBuilder {
 
         throw IRGenError("IRGenError: unsupported expression kind");
     }
-
     void genStmt(const StmtPtr& s) {
         if (!s) return;
 
@@ -2697,8 +2692,17 @@ struct IRBuilder {
         }
         if (s->kind == "VarDecl") {
             if (s->init) {
-                string r = genExpr(s->init);
-                code.push_back({"copy", r, "", s->name});
+                if (s->init->kind == "Literal") {
+                    string v = litValue(s->init);
+                    code.push_back({"copy", v, "", s->name});
+                }
+                else if (s->init->kind == "Identifier") {
+                    code.push_back({"copy", s->init->value, "", s->name});
+                }
+                else {
+                    string r = genExpr(s->init);
+                    code.push_back({"copy", r, "", s->name});
+                }
             }
             return;
         }
@@ -2780,7 +2784,6 @@ struct IRBuilder {
             code.push_back({"label", "", "", Lend});
             return;
         }
-
         throw IRGenError("IRGenError: unsupported statement kind");
     }
 
@@ -2789,19 +2792,27 @@ struct IRBuilder {
         for (auto& s : d->body) genStmt(s);
         code.push_back({"func_end", "", "", d->fnName});
     }
-
     vector<TAC> genProgram(const vector<DeclPtr>& decls) {
         code.clear();
         tempCounter = 0;
         labelCounter = 0;
-
         for (auto& d : decls) {
             if (d->kind == "VarDecl") {
                 if (d->varInit) {
-                    string r = genExpr(d->varInit);
-                    code.push_back({"copy", r, "", d->varName});
+                    if (d->varInit->kind == "Literal") {
+                        string v = litValue(d->varInit);
+                        code.push_back({"copy", v, "", d->varName});
+                    }
+                    else if (d->varInit->kind == "Identifier") {
+                        code.push_back({"copy", d->varInit->value, "", d->varName});
+                    }
+                    else {
+                        string r = genExpr(d->varInit);
+                        code.push_back({"copy", r, "", d->varName});
+                    }
                 }
-            } else if (d->kind == "FnDecl") {
+            }
+            else if (d->kind == "FnDecl") {
                 genFunction(d);
             } else {
                 throw IRGenError("IRGenError: unknown decl kind");
@@ -2811,10 +2822,104 @@ struct IRBuilder {
     }
 };
 
+static bool isImmediate(const string &s) {
+    if (s.empty()) return false;
+    char c = s[0];
+    return (c == '-' || (c >= '0' && c <= '9') || c == '"' || c == '\'');
+}
+static bool isTempVar(const string &s) {
+    return s.size() >= 2 && s[0] == '%' && s[1] == 't';
+}
+
+static void optimizeLiteralTemps(vector<TAC> &code) {
+    vector<bool> remove(code.size(), false);
+    for (size_t i = 0; i + 1 < code.size(); ++i) {
+        TAC &q = code[i];
+        if (q.op != "copy") continue;
+        if (!isImmediate(q.a1)) continue;
+        const string &tmp = q.dst;
+        if (tmp.size() < 2 || tmp[0] != '%' || tmp[1] != 't') continue; 
+        TAC &nq = code[i + 1]; 
+        bool used = false;
+        if (nq.a1 == tmp) { nq.a1 = q.a1; used = true; }
+        if (nq.a2 == tmp) { nq.a2 = q.a1; used = true; }
+        if (used) {
+            remove[i] = true;   
+        }
+    }
+    vector<TAC> out;
+    out.reserve(code.size());
+    for (size_t i = 0; i < code.size(); ++i) {
+        if (!remove[i]) out.push_back(code[i]);
+    }
+    code.swap(out);
+}
+static void optimizeTempCopies(vector<TAC> &code) {
+    if (code.empty()) return;
+
+    while (true) {
+        unordered_map<string, int> useCount;
+        auto countUse = [&](const string &v) {
+            if (isTempVar(v)) useCount[v]++;
+        };
+        for (const auto &q : code) {
+            if (q.op == "label" || q.op == "func_begin" || q.op == "func_end" ||
+                q.op == "goto") {
+                continue;
+            } else if (q.op == "ifz") {
+                countUse(q.a1);
+            } else if (q.op == "param") {
+                countUse(q.a1);
+            } else if (q.op == "ret") {
+                countUse(q.a1);
+            } else if (q.op == "load") {
+                countUse(q.a1);
+                countUse(q.a2);
+            } else if (q.op == "store") {
+                countUse(q.a1);
+                countUse(q.a2);
+                countUse(q.dst);
+            } else if (q.op == "call") {
+                // do nothing
+            } else {
+                countUse(q.a1);
+                countUse(q.a2);
+            }
+        }
+        bool changed = false;
+        vector<bool> remove(code.size(), false);
+        for (size_t i = 0; i + 1 < code.size(); ++i) {
+            TAC &def = code[i];
+            TAC &use = code[i + 1];
+            if (!isTempVar(def.dst)) continue;
+            if (use.op != "copy") continue;
+            if (use.a1 != def.dst) continue;
+            if (useCount[def.dst] != 1) continue;
+            if (def.op == "label" || def.op == "func_begin" || def.op == "func_end" ||
+                def.op == "goto" || def.op == "ifz" || def.op == "ret" ||
+                def.op == "param" || def.op == "call") {
+                continue;
+            }
+            def.dst = use.dst;
+            remove[i + 1] = true;
+            changed = true;
+        }
+        if (!changed) break;
+        vector<TAC> out;
+        out.reserve(code.size());
+        for (size_t i = 0; i < code.size(); ++i) {
+            if (!remove[i]) out.push_back(code[i]);
+        }
+        code.swap(out);
+    }
+}
+
 int runIRGen(const vector<DeclPtr>& decls) {
     try {
         IRBuilder ir;
         auto tac = ir.genProgram(decls);
+        optimizeLiteralTemps(tac);
+        optimizeTempCopies(tac);
         printTAC(tac);
         return 0;
     } catch (const IRGenError& e) {
@@ -2825,8 +2930,6 @@ int runIRGen(const vector<DeclPtr>& decls) {
         return 1;
     }
 }
-
-
 
 
 
