@@ -2931,6 +2931,256 @@ int runIRGen(const vector<DeclPtr>& decls) {
     }
 }
 
+//bonus A risc-v assembler
+
+#include <cstdint>
+struct AsmInstruction {
+    std::string mnemonic;
+    std::vector<std::string> operands;
+    int line = 0;
+    uint32_t address = 0; 
+};
+
+static std::string trimWS(const std::string &s) {
+    size_t b = 0, e = s.size();
+    while (b < e && std::isspace((unsigned char)s[b])) ++b;
+    while (e > b && std::isspace((unsigned char)s[e - 1])) --e;
+    return s.substr(b, e - b);
+}
+
+static std::vector<std::string> splitOperands(const std::string &s) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : s) {
+        if (c == ',') {
+            cur = trimWS(cur);
+            if (!cur.empty()) out.push_back(cur);
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    cur = trimWS(cur);
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
+static int parseReg(const std::string &r) {
+    if (r.size() < 2 || (r[0] != 'x' && r[0] != 'X'))
+        throw std::runtime_error("Asm error: bad register '" + r + "'");
+    int idx = std::stoi(r.substr(1));
+    if (idx < 0 || idx > 31)
+        throw std::runtime_error("Asm error: register out of range '" + r + "'");
+    return idx;
+}
+
+static void parseOffsetReg(const std::string &s, int &imm, int &baseReg) {
+    auto l = s.find('(');
+    auto r = s.find(')');
+    if (l == std::string::npos || r == std::string::npos || r <= l + 1)
+        throw std::runtime_error("Asm error: expected offset(reg) but got '" + s + "'");
+    std::string immStr = trimWS(s.substr(0, l));
+    std::string regStr = trimWS(s.substr(l + 1, r - l - 1));
+    imm = std::stoi(immStr);
+    baseReg = parseReg(regStr);
+}
+
+static uint32_t encodeR(uint32_t opcode, uint32_t funct3, uint32_t funct7,
+                        int rd, int rs1, int rs2) {
+    return (funct7 << 25) |
+           ((uint32_t)rs2 << 20) |
+           ((uint32_t)rs1 << 15) |
+           (funct3 << 12) |
+           ((uint32_t)rd << 7) |
+           opcode;
+}
+
+static uint32_t encodeI(uint32_t opcode, uint32_t funct3,
+                        int rd, int rs1, int imm) {
+    uint32_t uimm = (uint32_t)imm & 0xFFF; 
+    return (uimm << 20) |
+           ((uint32_t)rs1 << 15) |
+           (funct3 << 12) |
+           ((uint32_t)rd << 7) |
+           opcode;
+}
+
+static uint32_t encodeS(uint32_t opcode, uint32_t funct3,
+                        int rs1, int rs2, int imm) {
+    uint32_t uimm = (uint32_t)imm & 0xFFF;
+    uint32_t imm4_0  = uimm & 0x1F;
+    uint32_t imm11_5 = (uimm >> 5) & 0x7F;
+    return (imm11_5 << 25) |
+           ((uint32_t)rs2 << 20) |
+           ((uint32_t)rs1 << 15) |
+           (funct3 << 12) |
+           (imm4_0 << 7) |
+           opcode;
+}
+
+static uint32_t encodeB(uint32_t opcode, uint32_t funct3,
+                        int rs1, int rs2, int imm) {
+    uint32_t uimm = (uint32_t)imm & 0x1FFF;
+    uint32_t imm12   = (uimm >> 12) & 0x1;
+    uint32_t imm10_5 = (uimm >> 5)  & 0x3F;
+    uint32_t imm4_1  = (uimm >> 1)  & 0xF;
+    uint32_t imm11   = (uimm >> 11) & 0x1;
+
+    return (imm12   << 31) |
+           (imm10_5 << 25) |
+           ((uint32_t)rs2 << 20) |
+           ((uint32_t)rs1 << 15) |
+           (funct3 << 12) |
+           (imm4_1 << 8) |
+           (imm11  << 7) |
+           opcode;
+}
+
+static void assembleRiscV(const std::string &asmSource,
+                          std::vector<uint32_t> &outWords) {
+    std::istringstream iss(asmSource);
+    std::string line;
+    int lineNo = 0;
+    uint32_t pc = 0;
+
+    std::vector<AsmInstruction> insts;
+    std::unordered_map<std::string, uint32_t> labels;
+
+    while (std::getline(iss, line)) {
+        ++lineNo;
+
+        size_t cpos = line.find_first_of("#;");
+        if (cpos != std::string::npos)
+            line = line.substr(0, cpos);
+
+        line = trimWS(line);
+        if (line.empty()) continue;
+
+        if (!line.empty() && line.back() == ':') {
+            std::string label = trimWS(line.substr(0, line.size() - 1));
+            if (label.empty())
+                throw std::runtime_error("Asm error line " + std::to_string(lineNo) + ": empty label");
+            if (labels.count(label))
+                throw std::runtime_error("Asm error line " + std::to_string(lineNo) + ": duplicate label '" + label + "'");
+            labels[label] = pc;
+            continue;
+        }
+
+        std::istringstream ls(line);
+        std::string mnemonic;
+        ls >> mnemonic;
+        std::string rest;
+        std::getline(ls, rest);
+        rest = trimWS(rest);
+
+        AsmInstruction ins;
+        ins.mnemonic = mnemonic;
+        ins.line = lineNo;
+        ins.address = pc;
+        if (!rest.empty())
+            ins.operands = splitOperands(rest);
+        insts.push_back(std::move(ins));
+        pc += 4;
+    }
+
+    outWords.clear();
+    outWords.reserve(insts.size());
+
+    for (const auto &ins : insts) {
+        const std::string &m = ins.mnemonic;
+        const auto &ops = ins.operands;
+        auto fail = [&](const std::string &msg) {
+            throw std::runtime_error("Asm error line " + std::to_string(ins.line) + ": " + msg);
+        };
+
+        uint32_t word = 0;
+
+        if (m == "add" || m == "sub") {
+            if (ops.size() != 3) fail("expected: " + m + " rd, rs1, rs2");
+            int rd  = parseReg(ops[0]);
+            int rs1 = parseReg(ops[1]);
+            int rs2 = parseReg(ops[2]);
+            uint32_t funct7 = (m == "sub") ? 0x20 : 0x00;
+            uint32_t funct3 = 0x0;
+            uint32_t opcode = 0x33;
+            word = encodeR(opcode, funct3, funct7, rd, rs1, rs2);
+        }
+        else if (m == "addi") {
+            if (ops.size() != 3) fail("expected: addi rd, rs1, imm");
+            int rd  = parseReg(ops[0]);
+            int rs1 = parseReg(ops[1]);
+            int imm = std::stoi(ops[2]);
+            uint32_t opcode = 0x13;
+            uint32_t funct3 = 0x0;
+            word = encodeI(opcode, funct3, rd, rs1, imm);
+        }
+        else if (m == "li") {
+            if (ops.size() != 2) fail("expected: li rd, imm");
+            int rd  = parseReg(ops[0]);
+            int rs1 = 0; 
+            int imm = std::stoi(ops[1]);
+            uint32_t opcode = 0x13;
+            uint32_t funct3 = 0x0;
+            word = encodeI(opcode, funct3, rd, rs1, imm);
+        }
+        else if (m == "lw") {
+            if (ops.size() != 2) fail("expected: lw rd, imm(rs1)");
+            int rd = parseReg(ops[0]);
+            int rs1, imm;
+            parseOffsetReg(ops[1], imm, rs1);
+            uint32_t opcode = 0x03;
+            uint32_t funct3 = 0x2;
+            word = encodeI(opcode, funct3, rd, rs1, imm);
+        }
+        else if (m == "sw") {
+            if (ops.size() != 2) fail("expected: sw rs2, imm(rs1)");
+            int rs2 = parseReg(ops[0]);
+            int rs1, imm;
+            parseOffsetReg(ops[1], imm, rs1);
+            uint32_t opcode = 0x23;
+            uint32_t funct3 = 0x2;
+            word = encodeS(opcode, funct3, rs1, rs2, imm);
+        }
+        else if (m == "beq" || m == "bne" || m == "blt" || m == "bge") {
+            if (ops.size() != 3) fail("expected: " + m + " rs1, rs2, label");
+            int rs1 = parseReg(ops[0]);
+            int rs2 = parseReg(ops[1]);
+            auto it = labels.find(ops[2]);
+            if (it == labels.end())
+                fail("unknown label '" + ops[2] + "'");
+            uint32_t target = it->second;
+            int32_t rel = (int32_t)target - (int32_t)ins.address; 
+            if (rel % 2 != 0)
+                fail("branch target not 2-byte aligned");
+            int32_t imm = rel >> 1; 
+
+            uint32_t opcode = 0x63;
+            uint32_t funct3 = 0;
+            if (m == "beq") funct3 = 0x0;
+            else if (m == "bne") funct3 = 0x1;
+            else if (m == "blt") funct3 = 0x4;
+            else if (m == "bge") funct3 = 0x5;
+
+            word = encodeB(opcode, funct3, rs1, rs2, imm);
+        }
+        else {
+            fail("unsupported mnemonic '" + m + "'");
+        }
+
+        outWords.push_back(word);
+    }
+}
+
+static void writeBinary(const std::string &path, const std::vector<uint32_t> &words) {
+    std::ofstream ofs(path, std::ios::binary);
+    if (!ofs)
+        throw std::runtime_error("could not open output file: " + path);
+    for (uint32_t w : words) {
+        ofs.write(reinterpret_cast<const char *>(&w), sizeof(uint32_t));
+    }
+}
+
+
 
 
 static string readFile(const string &path)
@@ -3375,6 +3625,16 @@ int main()
     {
         cerr << "ParseError: " << e.what() << "\n";
         return 1;
+    }
+    try {
+        std::string asmText = readFile("prog.s");          
+        std::vector<uint32_t> words;
+        assembleRiscV(asmText, words);                   
+        writeBinary("prog.bin", words);                  
+        std::cout << "\nAssembler: wrote " << words.size()
+                << " instructions to prog.bin\n";
+    } catch (const std::exception &e) {
+        std::cerr << "Assembler error: " << e.what() << "\n";
     }
 
     return 0;
