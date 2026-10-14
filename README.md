@@ -1,64 +1,46 @@
-# Cpp-Compiler-From-Scratch
+# C++ Compiler From Scratch
 
-A toy C++ compiler implemented in C++, built from scratch for learning purposes.  
-The aim is to explore compiler design concepts such as **lexical analysis**, **parsing** (using Top-to-bottom Recursive descent parsing), simple **semantic checks**, and (eventually) **code generation**.
+A small compiler for a subset of C++, written in C++ to learn how compilers work. The same grammar is built in two ways: by hand, and with Bison.
 
----
+## What it covers
 
-## 📂 Project Structure
+- Lexical analysis (`lexer.cpp`)
+- Recursive descent parsing and basic semantic checks (`parser.cpp`)
+- Assembly generation. `prog.s` is a sample of the output.
+- A small x86 assembler that writes `prog_x86.bin`
+- The grammar in `grammar.md`
 
-```text
-Cpp-Compiler-From-Scratch/
-├── .gitignore
-├── lexer.cpp               # Core Lexer                      
-├── parser.cpp              # Core parser work-in-progress
-├── grammar.md              # Defines the grammar of the parser
-└── README.md
+## Folder structure
+
+```
+lexer.cpp            lexer
+parser.cpp           hand written parser and code generation
+parser complete.cpp  earlier full version of the parser
+grammar.md           grammar of the supported language
+input.cpp            sample input program
+prog.s, prog_x86.s   sample assembly output
+prog.bin, prog_x86.bin   sample binary output
+Bison/               same grammar written for Bison
+  bison.y
+  cpp_subset.y
+  input.cpp
+  How to run.txt
 ```
 
----
+## Build and run
 
-## ⚙️ Getting Started
-
-### 1) Clone the repository
-
-```bash
-git clone https://github.com/HarisMajeed05/Cpp-Compiler-From-Scratch.git
-cd Cpp-Compiler-From-Scratch
-```
-
-### 2) Build
-
-**Linux / macOS (g++ or clang++):**
+Hand written parser:
 
 ```bash
 g++ -std=c++17 -O2 -o parser parser.cpp
-```
-
-**Windows (MinGW):**
-
-```bash
-g++ parser.cpp -o parser.exe
-```
-
-### 3) Run
-
-```bash
 ./parser
 ```
 
----
+Bison version (Windows):
 
-## 🎯 Learning Goals
-
-- Understand the basic stages of a compiler pipeline
-- Implement lexical analysis (with and without `<regex>`)
-- Explore simple parsing and error handling
-
-
----
-
-## 📜 License
-
-This repository is for **educational purposes**.  
-License to be decided (**MIT recommended**).
+```bash
+cd Bison
+win_bison -o parser.cpp bison.y
+g++ parser.cpp -o parser.exe
+type .\input.cpp | .\parser.exe
+```
